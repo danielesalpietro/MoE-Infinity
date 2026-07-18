@@ -18,6 +18,12 @@
 # build fast and light on RAM/disk -- it's a pure speed optimization with an
 # automatic eager-attention fallback. Set INSTALL_FLASH_ATTN=true to include
 # it if you need maximum throughput and can afford the extra build time.
+#
+# model-status (http://localhost:8600) is a read-only page listing locally
+# cached models, their size, whether the download is complete, whether
+# HuggingFace Hub has a newer commit, and a HW-compatibility check for any
+# repo id you look up. It never downloads anything or touches the
+# moe-infinity container -- switching models is still done via MOE_MODEL.
 
 services:
   moe-infinity:
@@ -70,6 +76,25 @@ services:
       - open_webui_data:/app/backend/data
     depends_on:
       - moe-infinity
+
+  model-status:
+    build:
+      context: model-status
+    container_name: moe-infinity-model-status
+    restart: unless-stopped
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports:
+      - "8600:8600"
+    volumes:
+      - moe_hf_cache:/root/.cache/huggingface:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 volumes:
   moe_offload:

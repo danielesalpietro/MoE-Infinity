@@ -43,6 +43,22 @@ separate from the existing build/test Docker images.
   16/32GB RAM, 8/16GB VRAM, 40/80GB free disk) derived from this session's
   build of `deepseek-ai/DeepSeek-V2-Lite-Chat` (~30GB download). Exits
   0/1/2 for ready/warnings/failures.
+- [`model-status/`](model-status) — new read-only FastAPI service
+  (`docker-compose.webui.yml`, port 8600) showing which models are cached
+  locally (size on disk, download-complete status), whether HuggingFace Hub
+  has a newer commit than what's cached, and, for any HF repo id looked up,
+  its download size plus a pass/warn/fail check against this host's RAM,
+  free disk, and VRAM. The compatibility thresholds are heuristics
+  calibrated from the RAM-exhaustion crash-loop hit in this session
+  building `deepseek-ai/DeepSeek-V2-Lite-Chat` (~30GB) vs.
+  `allenai/OLMoE-1B-7B-0924-Instruct` (~13GB, ran cleanly). Mounts the
+  shared `moe_hf_cache` volume read-only and never touches the
+  `moe-infinity` container -- it only prints the `MOE_MODEL=... 
+  ./start-webui.sh` command to run.
+- [`.env.example`](.env.example) — documents all `MOE_*`/`HF_TOKEN`/
+  `INSTALL_FLASH_ATTN` variables used across `docker-compose.webui.yml`;
+  copy to `.env` (already gitignored) and `docker compose` picks it up
+  automatically instead of needing them exported by hand each time.
 
 ### Changed
 

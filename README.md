@@ -340,6 +340,18 @@ Stop the stack:
 docker compose -f docker-compose.webui.yml down
 ```
 
+Configuration can also be kept in a `.env` file instead of env-var prefixes — copy [`.env.example`](.env.example) to `.env` and edit it; `docker compose` (and therefore `start-webui.ps1`/`.sh`) picks it up automatically. This is also where an `HF_TOKEN` goes, for higher HuggingFace Hub rate limits and access to gated repos.
+
+#### Model status page
+
+[http://localhost:8600](http://localhost:8600) is a **read-only** page (`model-status` service) that shows:
+
+- which models are already cached locally, their size on disk, and whether the download completed
+- whether HuggingFace Hub has a newer commit than what you have cached
+- for any HuggingFace repo id you look up: total download size, and a pass/warn/fail check of that model's size against this host's RAM, free disk, and VRAM (heuristics calibrated from real RAM-exhaustion incidents hit while building this stack — see [`model-status/app.py`](model-status/app.py))
+
+It never downloads anything or restarts `moe-infinity` — it only tells you what to run: `MOE_MODEL=<repo_id> ./start-webui.sh`.
+
 ## ContextPilot Integration (Optional)
 
 ContextPilot is an optional overlap-aware prompt optimization layer for shared-prefix and multi-turn workloads. You can enable it inside the OpenAI-compatible server before tokenization, or extend it into KV allocation and scheduling for deeper reuse gains.

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MoE-Infinity Model Status</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, sans-serif; margin: 0; padding: 2rem; max-width: 960px; margin-inline: auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.05rem; margin-top: 2.5rem; border-bottom: 1px solid #8884; padding-bottom: 0.4rem; }
+  .sub { opacity: 0.7; margin-top: 0; margin-bottom: 1.5rem; font-size: 0.9rem; }
+  table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; }
+  th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #8883; font-size: 0.9rem; }
+  th { opacity: 0.7; font-weight: 600; }
+  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+  .badge.pass { background: #1e7e3420; color: #1e7e34; }
+  .badge.warn { background: #b8860b20; color: #b8860b; }
+  .badge.fail { background: #c0392b20; color: #c0392b; }
+  .badge.neutral { background: #6c757d20; color: #6c757d; }
+  form { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
+  input[type=text] { flex: 1; min-width: 240px; padding: 0.5rem 0.7rem; border: 1px solid #8886; border-radius: 6px; font-size: 0.9rem; background: transparent; color: inherit; }
+  button { padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #8886; background: #1e7e3420; color: inherit; cursor: pointer; font-size: 0.9rem; }
+  button:hover { background: #1e7e3440; }
+  .suggestions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; }
+  .suggestions span { font-size: 0.78rem; padding: 0.15rem 0.5rem; border: 1px solid #8886; border-radius: 999px; cursor: pointer; opacity: 0.8; }
+  .suggestions span:hover { opacity: 1; }
+  .result-card { border: 1px solid #8884; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+  .checks { list-style: none; padding: 0; margin: 0.6rem 0 0 0; }
+  .checks li { padding: 0.25rem 0; font-size: 0.85rem; }
+  code { background: #8882; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
+  .empty { opacity: 0.6; font-size: 0.9rem; margin-top: 0.75rem; }
+  .err { color: #c0392b; margin-top: 0.75rem; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+  <h1>MoE-Infinity Model Status</h1>
+  <p class="sub">Read-only view of locally cached models and HuggingFace Hub lookups. Does not download or switch models -- use <code>start-webui.ps1</code> / <code>start-webui.sh</code> for that.</p>
+
+  <h2>Locally cached models</h2>
+  <div id="local-resources" class="empty">Loading host resources...</div>
+  <table id="local-table" style="display:none">
+    <thead><tr><th>Model</th><th>Size on disk</th><th>Download status</th></tr></thead>
+    <tbody id="local-tbody"></tbody>
+  </table>
+  <div id="local-empty" class="empty" style="display:none">No models cached yet.</div>
+
+  <h2>Look up a model</h2>
+  <form id="lookup-form">
+    <input type="text" id="repo-input" placeholder="e.g. deepseek-ai/DeepSeek-V2-Lite-Chat" autocomplete="off">
+    <button type="submit">Check</button>
+  </form>
+  <div class="suggestions" id="suggestions"></div>
+  <div id="lookup-result"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function badge(level, text) {
+  return `<span class="badge ${level}">${text}</span>`;
+}
+
+function fmtGB(gb) {
+  if (gb === null || gb === undefined) return "unknown";
+  return `${gb} GB`;
+}
+
+async function loadResources() {
+  const res = await fetch("/api/system-resources");
+  const r = await res.json();
+  const gpu = r.gpu_name ? `${r.gpu_name} (${fmtGB(r.vram_total_gb)} VRAM)` : "no GPU detected";
+  $("local-resources").innerHTML =
+    `Host: ${fmtGB(r.ram_total_gb)} RAM &middot; ${fmtGB(r.disk_free_gb)} free disk &middot; ${gpu}`;
+  return r;
+}
+
+async function loadLocalModels() {
+  const res = await fetch("/api/local-models");
+  const data = await res.json();
+  const tbody = $("local-tbody");
+  tbody.innerHTML = "";
+  if (!data.models.length) {
+    $("local-empty").style.display = "block";
+    $("local-table").style.display = "none";
+    return;
+  }
+  $("local-table").style.display = "table";
+  $("local-empty").style.display = "none";
+  for (const m of data.models) {
+    const status = m.complete
+      ? badge("pass", "complete")
+      : badge("warn", `incomplete${m.incomplete_file_count ? ` (${m.incomplete_file_count} pending files)` : ""}`);
+    tbody.innerHTML += `<tr>
+      <td>${m.repo_id ?? "(unrecognized cache dir)"}</td>
+      <td>${fmtGB(m.size_gb)}</td>
+      <td>${status}</td>
+    </tr>`;
+  }
+}
+
+async function loadKnownModels() {
+  const res = await fetch("/api/known-models");
+  const data = await res.json();
+  const box = $("suggestions");
+  box.innerHTML = "";
+  for (const m of data.models) {
+    const el = document.createElement("span");
+    el.textContent = m.repo_id;
+    el.onclick = () => { $("repo-input").value = m.repo_id; doLookup(m.repo_id); };
+    box.appendChild(el);
+  }
+}
+
+async function doLookup(repoId) {
+  const box = $("lookup-result");
+  box.innerHTML = `<p class="empty">Checking ${repoId}...</p>`;
+  try {
+    const res = await fetch(`/api/check-model?repo_id=${encodeURIComponent(repoId)}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      box.innerHTML = `<p class="err">${err.detail || "Lookup failed"}</p>`;
+      return;
+    }
+    const m = await res.json();
+    const overallBadge = badge(m.compatibility.overall, m.compatibility.overall.toUpperCase());
+    const checksHtml = m.compatibility.checks.map(c =>
+      `<li>${badge(c.level, c.item)} ${c.detail}</li>`
+    ).join("");
+
+    let updateHtml = "";
+    if (m.local) {
+      if (m.update_available === true) {
+        updateHtml = `<p>${badge("warn", "update available")} local commit <code>${m.local.local_commit?.slice(0,8)}</code> vs remote <code>${m.remote_commit.slice(0,8)}</code></p>`;
+      } else if (m.update_available === false) {
+        updateHtml = `<p>${badge("pass", "up to date")} matches remote commit <code>${m.remote_commit.slice(0,8)}</code></p>`;
+      }
+    } else {
+      updateHtml = `<p>${badge("neutral", "not downloaded yet")}</p>`;
+    }
+
+    box.innerHTML = `<div class="result-card">
+      <p><strong>${m.repo_id}</strong> ${overallBadge} ${m.gated ? badge("warn", "gated") : ""}</p>
+      <p>Download size: <strong>${fmtGB(m.size_gb)}</strong></p>
+      ${updateHtml}
+      <ul class="checks">${checksHtml}</ul>
+      <p style="margin-top:0.75rem">To use it: <code>${m.start_command}</code></p>
+    </div>`;
+  } catch (e) {
+    box.innerHTML = `<p class="err">${e}</p>`;
+  }
+}
+
+$("lookup-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const repoId = $("repo-input").value.trim();
+  if (repoId) doLookup(repoId);
+});
+
+loadResources();
+loadLocalModels();
+loadKnownModels();
+</script>
+</body>
+</html>
