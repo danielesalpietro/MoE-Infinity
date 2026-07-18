@@ -42,6 +42,14 @@ separate from the existing build/test Docker images.
   100%, including a Docker Desktop WSL2 backend crash, on a 32 GB RAM / 24
   logical core host. `docker-compose.webui.yml` and the README document how
   to opt back in via `INSTALL_FLASH_ATTN=true`.
+- Fixed: the first pass at excluding flash-attn only filtered the initial
+  `pip install -r requirements.txt` layer. `setup.py` independently rebuilds
+  `install_requires` from `requirements.txt` at editable-install time
+  (`fetch_requirements("requirements.txt")`), and `COPY . .` re-copies the
+  original, unfiltered file over the earlier filtered one -- so the `pip
+  install -e .` step was still pulling in and building flash-attn from
+  source regardless. `docker/Dockerfile.serve` now strips flash-attn from
+  `requirements.txt` a second time, in-place, after `COPY . .`.
 
 ### Notes
 

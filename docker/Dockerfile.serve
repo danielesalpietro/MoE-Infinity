@@ -85,6 +85,16 @@ RUN if [ "$INSTALL_FLASH_ATTN" = "true" ]; then \
 
 COPY . .
 
+# setup.py's install_requires is built from requirements.txt at build time
+# (fetch_requirements("requirements.txt")), and COPY . . just overwrote the
+# filtered copy above with the original file -- strip flash-attn from it
+# again here, or the editable install below re-resolves and rebuilds it
+# from source regardless of the filtered install that already ran.
+RUN if [ "$INSTALL_FLASH_ATTN" != "true" ]; then \
+        grep -v '^flash-attn' requirements.txt > requirements.txt.tmp \
+        && mv requirements.txt.tmp requirements.txt; \
+    fi
+
 RUN --mount=type=cache,target=/ccache \
     CUTLASS_DIR=${CUTLASS_DIR} pip install --no-cache-dir --no-build-isolation -e .
 
