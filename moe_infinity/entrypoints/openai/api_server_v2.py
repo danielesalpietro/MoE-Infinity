@@ -1876,11 +1876,19 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Enable CP debug endpoints (inject-fault)",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="info",
+        choices=["debug", "info", "warning", "error", "critical"],
+        help="Root logging level, also passed to uvicorn (default: info)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    logging.basicConfig(level=args.log_level.upper())
     _max_waiting_requests = max(0, int(args.max_waiting_requests))
     _max_n = max(1, int(args.max_n))
     _configure_auth(
@@ -1898,6 +1906,6 @@ if __name__ == "__main__":
         app,
         host=args.host,
         port=args.port,
-        log_level="info",
+        log_level=args.log_level,
         timeout_keep_alive=TIMEOUT_KEEP_ALIVE,
     )

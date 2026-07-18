@@ -24,6 +24,12 @@
 # HuggingFace Hub has a newer commit, and a HW-compatibility check for any
 # repo id you look up. It never downloads anything or touches the
 # moe-infinity container -- switching models is still done via MOE_MODEL.
+#
+# MOE_LOG_LEVEL is unset (quiet) by default. Set it in .env when you need to
+# trace a slow/stuck load -- e.g. MOE_LOG_LEVEL=debug -- rather than leaving
+# verbose logging on all the time. SYS_PTRACE is granted so `py-spy dump
+# --pid 1` can be run inside the container for a live stack trace when
+# logging alone isn't enough to tell whether it's stuck or just slow.
 
 services:
   moe-infinity:
@@ -42,6 +48,9 @@ services:
       MOE_MAX_BATCH_SIZE: ${MOE_MAX_BATCH_SIZE:-8}
       MOE_API_KEYS: ${MOE_API_KEYS:-}
       HF_TOKEN: ${HF_TOKEN:-}
+      MOE_LOG_LEVEL: ${MOE_LOG_LEVEL:-}
+    cap_add:
+      - SYS_PTRACE
     ports:
       - "8000:8000"
     volumes:

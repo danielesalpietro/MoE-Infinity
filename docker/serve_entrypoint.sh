@@ -27,4 +27,8 @@ if [ "${MOE_ENABLE_CONTEXTPILOT:-0}" = "1" ]; then
   args+=(--enable-contextpilot)
 fi
 
+if [ -n "${MOE_LOG_LEVEL:-}" ]; then
+  args+=(--log-level "$(echo "${MOE_LOG_LEVEL}" | tr '[:upper:]' '[:lower:]')")
+fi
+
 exec python -m moe_infinity.entrypoints.openai.api_server_v2 "${args[@]}" "$@"
