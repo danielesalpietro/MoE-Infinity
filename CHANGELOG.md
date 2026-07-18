@@ -26,6 +26,10 @@ separate from the existing build/test Docker images.
   inside the Linux container.
 - README: new "Chat WebUI (Docker)" section under "OpenAI-Compatible Server"
   documenting how to start the stack and override the served model.
+- [`start-webui.ps1`](start-webui.ps1) / [`start-webui.sh`](start-webui.sh) —
+  launch scripts wrapping `docker compose -f docker-compose.webui.yml up -d
+  --build`, with an optional model override argument, mirroring
+  NORTHSTREAM's `start-addon.ps1`/`.sh` pattern.
 
 ### Notes
 

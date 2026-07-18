@@ -308,6 +308,18 @@ For interactive use (rather than curl/the `openai` package), [`docker-compose.we
 docker compose -f docker-compose.webui.yml up -d --build
 ```
 
+or with the bundled launch scripts, which also accept an optional model override:
+
+```powershell
+.\start-webui.ps1
+.\start-webui.ps1 -Model openai/gpt-oss-20b
+```
+
+```bash
+./start-webui.sh
+./start-webui.sh openai/gpt-oss-20b
+```
+
 Open [http://localhost:3000](http://localhost:3000) — on first launch, Open WebUI asks you to create a local admin account, after which the model configured via `MOE_MODEL` (default `deepseek-ai/DeepSeek-V2-Lite-Chat`) is available in the model picker. Override the served model without editing the file:
 
 ```bash
