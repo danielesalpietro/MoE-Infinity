@@ -7,6 +7,13 @@
 # This image is for interacting with a model, not for running the test
 # suite -- see docker/Dockerfile for the build & test image.
 #
+# flash-attn is skipped by default: it is a purely optional acceleration
+# (moe_infinity/runtime/model_offload.py falls back to eager attention when
+# unavailable) but it's built from source with no prebuilt wheel available
+# for this torch/CUDA/Python combination -- by far the slowest and most
+# RAM-hungry step of the build. Pass --build-arg INSTALL_FLASH_ATTN=true to
+# include it (e.g. for a throughput benchmark rather than interactive chat).
+#
 # Usage:
 #   docker build -t moe-infinity-serve -f docker/Dockerfile.serve .
 #   docker run --gpus all -p 8000:8000 \
@@ -60,6 +67,8 @@ RUN git clone --branch v3.2.2 --depth 1 https://github.com/NVIDIA/NVTX.git /tmp/
 
 WORKDIR /workspace/MoE-Infinity
 
+ARG INSTALL_FLASH_ATTN=false
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir \
     setuptools>=75 \
@@ -67,7 +76,12 @@ RUN pip install --no-cache-dir \
     ninja \
     py-cpuinfo
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN if [ "$INSTALL_FLASH_ATTN" = "true" ]; then \
+        pip install --no-cache-dir -r requirements.txt; \
+    else \
+        grep -v '^flash-attn' requirements.txt > requirements.no-flash-attn.txt \
+        && pip install --no-cache-dir -r requirements.no-flash-attn.txt; \
+    fi
 
 COPY . .
 

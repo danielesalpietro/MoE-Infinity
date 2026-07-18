@@ -31,6 +31,18 @@ separate from the existing build/test Docker images.
   --build`, with an optional model override argument, mirroring
   NORTHSTREAM's `start-addon.ps1`/`.sh` pattern.
 
+### Changed
+
+- `docker/Dockerfile.serve` skips building `flash-attn` from source by
+  default (`INSTALL_FLASH_ATTN` build arg, default `false`). flash-attn is a
+  pure speed optimization with an automatic eager-attention fallback
+  (`moe_infinity/runtime/model_offload.py`), but building it from source with
+  no prebuilt wheel available was by far the slowest, most RAM/disk-hungry
+  step of the build -- it was observed driving host RAM and disk I/O to
+  100%, including a Docker Desktop WSL2 backend crash, on a 32 GB RAM / 24
+  logical core host. `docker-compose.webui.yml` and the README document how
+  to opt back in via `INSTALL_FLASH_ATTN=true`.
+
 ### Notes
 
 - Requires an NVIDIA GPU with the NVIDIA Container Toolkit on the host.

@@ -13,12 +13,19 @@
 # Requires an NVIDIA GPU + the NVIDIA Container Toolkit on the host.
 # Override the served model with, e.g.:
 #   MOE_MODEL=openai/gpt-oss-20b docker compose -f docker-compose.webui.yml up -d --build
+#
+# flash-attn is skipped by default (see docker/Dockerfile.serve) to keep the
+# build fast and light on RAM/disk -- it's a pure speed optimization with an
+# automatic eager-attention fallback. Set INSTALL_FLASH_ATTN=true to include
+# it if you need maximum throughput and can afford the extra build time.
 
 services:
   moe-infinity:
     build:
       context: .
       dockerfile: docker/Dockerfile.serve
+      args:
+        INSTALL_FLASH_ATTN: ${INSTALL_FLASH_ATTN:-false}
     container_name: moe-infinity-server
     restart: unless-stopped
     environment:

@@ -328,6 +328,12 @@ MOE_MODEL=openai/gpt-oss-20b docker compose -f docker-compose.webui.yml up -d --
 
 This requires an NVIDIA GPU with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host. The `moe-infinity` service builds from [`docker/Dockerfile.serve`](docker/Dockerfile.serve), which is dedicated to serving a model (not to running the test suite — see [`docker/Dockerfile`](docker/Dockerfile) for that).
 
+By default this build skips `flash-attn`: it's a pure speed optimization (the server falls back to eager attention automatically when it's absent) but it compiles from source with no prebuilt wheel for this torch/CUDA/Python combination, making it by far the slowest and most RAM/disk-intensive part of the build. If you need maximum throughput and can afford the extra build time, include it with:
+
+```bash
+INSTALL_FLASH_ATTN=true docker compose -f docker-compose.webui.yml up -d --build
+```
+
 Stop the stack:
 
 ```bash
