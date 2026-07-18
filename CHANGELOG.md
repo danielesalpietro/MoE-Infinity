@@ -170,3 +170,22 @@ in this stack even though it's listed as a supported architecture:
   endless silent `"starting"`. `allenai/OLMoE-1B-7B-0924-Instruct` (~13GB)
   loads comfortably in the same environment (peaks ~93% only briefly,
   settles under 65%).
+- On `cudaHostAlloc failed`: `self.archer_engine.set_topology(topo)`
+  (`model_offload.py:943`) only builds a tensor-ID/stage index
+  (`ArcherPrefetchHandle::SetTopology` -> `ArcherTopologyHandle::
+  InitializeTopology`, `core/prefetch/archer_prefetch_handle.cpp:348`,
+  `core/model/model_topology.cpp:507`) -- it doesn't itself move or pin the
+  full ~30GB of weights, so the pinned-memory request that fails there is
+  much smaller than "the whole offload". The pinned allocator behind it
+  (`c10::HostCachingAllocator`, `core/memory/host_caching_allocator.cpp`)
+  is a generic, reusable pool serviced by many separately-sized
+  `cudaHostAlloc` calls over the process's life, **not** one allocation
+  sized to the model -- and critically, its `free()` never actually
+  releases pages back to CUDA/the OS (explicit comment in the source: "we
+  are not really freeing the memory"), it only returns them to an internal
+  reuse pool. So pinned-memory pressure is monotonically increasing within
+  a single server process; freeing *host* RAM before starting a load still
+  helps (pinned pages are carved from the same physical pool, and the
+  allocation needs contiguous, lockable pages -- fails under pressure even
+  when nominal "free" RAM looks nonzero), but restarting the container is
+  what actually resets pinned usage back to zero.
