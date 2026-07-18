@@ -11,15 +11,19 @@ touches the moe-infinity container. Switching models is still done via
 `MOE_MODEL=<repo_id> ./start-webui.sh` (see README).
 """
 
+import json
 import os
 import re
 import shutil
+import struct
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
@@ -28,6 +32,34 @@ import psutil
 HF_CACHE_DIR = Path(os.environ.get("HF_CACHE_DIR", "/root/.cache/huggingface"))
 HF_HUB_DIR = HF_CACHE_DIR / "hub"
 HF_TOKEN = os.environ.get("HF_TOKEN") or None
+
+# Optional: host total RAM in GB, passed in by start-webui.ps1/.sh (best
+# effort -- psutil inside the container only sees what Docker Desktop's
+# WSL2 VM was granted, not the physical host total).
+HOST_RAM_TOTAL_GB = os.environ.get("HOST_RAM_TOTAL_GB")
+
+# Read-only Docker API access via tecnativa/docker-socket-proxy (GET-only,
+# no exec/start/stop/create -- see docker-compose.webui.yml). Optional: the
+# dashboard degrades gracefully (container/log panels just report
+# "unavailable") if this isn't set or isn't reachable.
+DOCKER_PROXY_URL = (os.environ.get("DOCKER_PROXY_URL") or "").rstrip("/")
+
+# Only these containers can be queried through the dashboard, even though
+# the proxy technically has visibility into every container on the host --
+# this is our stack's dashboard, not a general Docker inspector.
+DASHBOARD_CONTAINERS = [
+    "moe-infinity-server",
+    "moe-infinity-open-webui",
+    "moe-infinity-model-status",
+    "moe-infinity-docker-proxy",
+]
+
+# Volumes mounted read-only for disk accounting (see docker-compose.webui.yml).
+DASHBOARD_VOLUME_PATHS = {
+    "hf_cache": HF_CACHE_DIR,
+    "offload": Path(os.environ.get("OFFLOAD_DIR", "/mnt/offload")),
+    "open_webui_data": Path(os.environ.get("OPEN_WEBUI_DATA_DIR", "/mnt/open_webui_data")),
+}
 
 # Weight file extensions counted toward a model's download size.
 WEIGHT_EXTENSIONS = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
@@ -162,6 +194,208 @@ def system_resources() -> JSONResponse:
             "vram_total_gb": vram_total_gb,
         }
     )
+
+
+def _dir_size_bytes(path: Path) -> Optional[int]:
+    if not path.is_dir():
+        return None
+    total = 0
+    for entry in path.rglob("*"):
+        try:
+            if entry.is_file() and not entry.is_symlink():
+                total += entry.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+@app.get("/api/dashboard/resources")
+def dashboard_resources() -> JSONResponse:
+    mem = psutil.virtual_memory()
+    docker_ram = {
+        "total_gb": _bytes_to_gb(mem.total),
+        "used_gb": _bytes_to_gb(mem.used),
+        "used_pct": mem.percent,
+    }
+
+    host_ram = None
+    if HOST_RAM_TOTAL_GB:
+        try:
+            host_total = float(HOST_RAM_TOTAL_GB)
+            host_ram = {
+                "total_gb": host_total,
+                # Best-effort: we don't have visibility into what's used
+                # outside the Docker Desktop VM, so this only shows the
+                # portion Docker itself is using against the true host total.
+                "docker_used_gb": docker_ram["used_gb"],
+                "docker_used_pct": round(docker_ram["used_gb"] / host_total * 100, 1) if host_total else None,
+            }
+        except ValueError:
+            host_ram = None
+
+    disk_system = None
+    try:
+        usage = shutil.disk_usage("/")
+        disk_system = {
+            "total_gb": _bytes_to_gb(usage.total),
+            "used_gb": _bytes_to_gb(usage.used),
+            "free_gb": _bytes_to_gb(usage.free),
+            "used_pct": round(usage.used / usage.total * 100, 1) if usage.total else None,
+        }
+    except OSError:
+        pass
+
+    volumes = {}
+    total_volume_bytes = 0
+    for label, path in DASHBOARD_VOLUME_PATHS.items():
+        size = _dir_size_bytes(path)
+        volumes[label] = _bytes_to_gb(size) if size is not None else None
+        if size is not None:
+            total_volume_bytes += size
+
+    base_resources = json.loads(system_resources().body)
+
+    return JSONResponse(
+        {
+            "docker_ram": docker_ram,
+            "host_ram": host_ram,
+            "disk_system": disk_system,
+            "disk_volumes": volumes,
+            "disk_volumes_total_gb": _bytes_to_gb(total_volume_bytes),
+            "gpu_name": base_resources.get("gpu_name"),
+            "vram_total_gb": base_resources.get("vram_total_gb"),
+        }
+    )
+
+
+def _docker_api_get(path: str, timeout: float = 5.0) -> Any:
+    if not DOCKER_PROXY_URL:
+        return None
+    try:
+        with urllib.request.urlopen(f"{DOCKER_PROXY_URL}{path}", timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def _docker_api_get_raw(path: str, timeout: float = 5.0) -> Optional[bytes]:
+    if not DOCKER_PROXY_URL:
+        return None
+    try:
+        with urllib.request.urlopen(f"{DOCKER_PROXY_URL}{path}", timeout=timeout) as resp:
+            return resp.read()
+    except (urllib.error.URLError, TimeoutError):
+        return None
+
+
+def _cpu_percent(stats: dict[str, Any]) -> Optional[float]:
+    try:
+        cpu_delta = (
+            stats["cpu_stats"]["cpu_usage"]["total_usage"]
+            - stats["precpu_stats"]["cpu_usage"]["total_usage"]
+        )
+        system_delta = (
+            stats["cpu_stats"]["system_cpu_usage"]
+            - stats["precpu_stats"]["system_cpu_usage"]
+        )
+        num_cpus = stats["cpu_stats"].get("online_cpus") or len(
+            stats["cpu_stats"]["cpu_usage"].get("percpu_usage", [1])
+        )
+        if system_delta > 0 and cpu_delta >= 0:
+            return round((cpu_delta / system_delta) * num_cpus * 100, 1)
+    except (KeyError, TypeError, ZeroDivisionError):
+        pass
+    return None
+
+
+@app.get("/api/dashboard/containers")
+def dashboard_containers() -> JSONResponse:
+    if not DOCKER_PROXY_URL:
+        return JSONResponse({"available": False, "containers": []})
+
+    all_containers = _docker_api_get("/containers/json?all=1")
+    if all_containers is None:
+        return JSONResponse({"available": False, "containers": []})
+
+    by_name = {}
+    for c in all_containers:
+        names = [n.lstrip("/") for n in c.get("Names", [])]
+        for name in names:
+            if name in DASHBOARD_CONTAINERS:
+                by_name[name] = c
+
+    containers = []
+    for name in DASHBOARD_CONTAINERS:
+        c = by_name.get(name)
+        if c is None:
+            containers.append({"name": name, "status": "not found", "state": None,
+                                "cpu_pct": None, "mem_used_gb": None, "mem_pct": None})
+            continue
+
+        state = c.get("State")
+        cpu_pct = None
+        mem_used_gb = None
+        mem_pct = None
+        if state == "running":
+            stats = _docker_api_get(f"/containers/{c['Id']}/stats?stream=false", timeout=8.0)
+            if stats:
+                cpu_pct = _cpu_percent(stats)
+                mem_usage = stats.get("memory_stats", {}).get("usage")
+                mem_limit = stats.get("memory_stats", {}).get("limit")
+                if mem_usage is not None:
+                    mem_used_gb = _bytes_to_gb(mem_usage)
+                if mem_usage and mem_limit:
+                    mem_pct = round(mem_usage / mem_limit * 100, 1)
+
+        containers.append(
+            {
+                "name": name,
+                "status": c.get("Status"),
+                "state": state,
+                "cpu_pct": cpu_pct,
+                "mem_used_gb": mem_used_gb,
+                "mem_pct": mem_pct,
+            }
+        )
+
+    return JSONResponse({"available": True, "containers": containers})
+
+
+def _demux_docker_logs(raw: bytes) -> str:
+    # Non-TTY containers' log stream is framed: 1 byte stream type, 3 bytes
+    # padding, 4 bytes big-endian payload length, then that many payload
+    # bytes, repeated. https://docs.docker.com/engine/api/v1.41/#tag/Container/operation/ContainerAttach
+    lines = []
+    offset = 0
+    while offset + 8 <= len(raw):
+        length = struct.unpack(">I", raw[offset + 4:offset + 8])[0]
+        start = offset + 8
+        end = start + length
+        lines.append(raw[start:end].decode("utf-8", errors="replace"))
+        offset = end
+    if not lines and raw:
+        # Fallback: not framed (can happen for proxies that already strip
+        # headers) -- return as-is.
+        return raw.decode("utf-8", errors="replace")
+    return "".join(lines)
+
+
+@app.get("/api/dashboard/logs", response_class=PlainTextResponse)
+def dashboard_logs(
+    container: str = Query(..., description="Container name"),
+    tail: int = Query(200, ge=1, le=2000),
+) -> str:
+    if container not in DASHBOARD_CONTAINERS:
+        raise HTTPException(status_code=400, detail="Unknown container")
+    if not DOCKER_PROXY_URL:
+        return "Docker API proxy not configured -- logs unavailable."
+
+    raw = _docker_api_get_raw(
+        f"/containers/{container}/logs?stdout=1&stderr=1&tail={tail}&timestamps=1"
+    )
+    if raw is None:
+        return f"Could not reach Docker API proxy for {container}'s logs."
+    return _demux_docker_logs(raw) or "(no log output yet)"
 
 
 def _hf_model_size_bytes(info: Any) -> int:

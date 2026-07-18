@@ -59,6 +59,69 @@ separate from the existing build/test Docker images.
   `INSTALL_FLASH_ATTN` variables used across `docker-compose.webui.yml`;
   copy to `.env` (already gitignored) and `docker compose` picks it up
   automatically instead of needing them exported by hand each time.
+- `--log-level` flag on `api_server_v2.py` (default `info`, matching the
+  previous hardcoded value), wired to both `logging.basicConfig` and
+  `uvicorn.run`. Set via the new `MOE_LOG_LEVEL` env var (empty/unset by
+  default -- deliberately opt-in per run rather than always-on, since
+  `debug` is noisy) when diagnosing a slow/stuck model load.
+- `cap_add: [SYS_PTRACE]` on the `moe-infinity` service so `py-spy dump
+  --pid 1` can be run inside the container for a live Python stack trace --
+  used during this session to tell a genuinely deadlocked load apart from a
+  slow-but-working one (`/proc/1/task/*/wchan` was the fallback when
+  `py-spy` wasn't yet installed/permitted).
+- **Dashboard** in `model-status` (same service, same URL): RAM (host
+  total, RAM assigned to Docker's WSL2 VM, RAM in use) and disk (host
+  free/used, total size of this stack's Docker volumes) as SVG donut
+  gauges; a live status/CPU/memory table for `moe-infinity-server`,
+  `open-webui`, `model-status`, and `docker-proxy`; and an auto-refreshing
+  log viewer. Backed by a new `docker-proxy` service
+  ([`tecnativa/docker-socket-proxy`](https://github.com/Tecnativa/docker-socket-proxy))
+  that exposes only read-only `GET` Docker API calls (`CONTAINERS=1`,
+  `INFO=1`, `POST=0` -- no exec/start/stop/create), which `model-status`
+  additionally restricts to this stack's own container names
+  (`DASHBOARD_CONTAINERS` in `app.py`) even though the proxy itself can see
+  every container on the host. `start-webui.ps1`/`.sh` now also detect and
+  export `HOST_RAM_TOTAL_GB` (best effort) for the host-RAM gauge, since
+  `model-status` can only see what's inside Docker Desktop's WSL2 VM
+  otherwise.
+
+### Fixed (moe_infinity library)
+
+These two are fixes to `moe_infinity/` itself (not the Docker/WebUI layer),
+found while debugging why `allenai/OLMoE-1B-7B-0924-Instruct` never loaded
+in this stack even though it's listed as a supported architecture:
+
+- `moe_infinity/entrypoints/openai/api_server_v2.py`, `_initialize_model()`
+  had no `except` clause, and is scheduled as a fire-and-forget
+  `asyncio.create_task` that nothing ever awaits or inspects. Any exception
+  raised while constructing the model (architecture errors, CUDA
+  allocation failures, etc.) was silently dropped: the process kept
+  running, `/health` stayed on `"starting"` forever, and every request got
+  a `503` indistinguishable from a genuine hang. Now the failure is logged
+  (`logger.exception(...)`) and surfaced through `/health` as
+  `{"status": "unhealthy", "reason": "<exception>"}`. This is what
+  actually revealed both root causes below -- before this fix, both looked
+  identical from the outside (an eternal, silent `"starting"`).
+- `moe_infinity/utils/hf_config.py`, `parse_moe_param()` /
+  `parse_expert_id()`: `olmoe` is registered in
+  `moe_infinity/common/constants.py`'s `MODEL_MAPPING_NAMES` /
+  `MODEL_MAPPING_TYPES` and has a working monkey-patch class
+  (`SyncOlmoeMoEBlock` in `moe_infinity/models/olmoe.py`), but was missing
+  from the `if/elif` chain in both functions, which raised
+  `RuntimeError: Unsupported architecture olmoeforcausallm`. OLMoE's config
+  fields (`num_experts`, `num_experts_per_tok`) and expert parameter
+  naming (`layers.N.mlp.experts.M....`) are identical to the already-handled
+  `qwen3` branch, so `"olmoe" in arch` was added to that same branch in
+  both functions. The same registration gap (present in `constants.py`,
+  missing in `hf_config.py`) still exists for `dbrx`, `jamba`, and `opt`.
+  With this fix, `allenai/OLMoE-1B-7B-0924-Instruct` loads and serves
+  correctly (confirmed via `/v1/chat/completions`), though a separate,
+  unrelated bug remains: the fused MoE CUDA kernel
+  (`extensions/kernel/fused_moe_mlp.cu:123`,
+  `fused_moe_ffn_into`/`MoEMLP::ForwardHelper`) throws `hidden dim mismatch`
+  for OLMoE's expert shape (`intermediate_size=1024` vs
+  `hidden_size=2048`), producing degenerate output and eventually crashing
+  the process -- not fixed here, needs a native-kernel-level look.
 
 ### Changed
 
@@ -86,3 +149,12 @@ separate from the existing build/test Docker images.
 - Distinct in purpose from `docker/Dockerfile` and `docker/Dockerfile.benchmark`,
   which build/test and benchmark images respectively and are not meant for
   interactive model use.
+- `deepseek-ai/DeepSeek-V2-Lite-Chat` (~30GB) needs more RAM headroom than
+  it looks like it should on a 32GB-RAM host: with WSL2 given 21.5GB, its
+  offload-construction phase peaks around 94-95% memory and the topology
+  setup's pinned-memory allocation (`cudaHostAlloc`, `model_offload.py:943`)
+  fails at that pressure -- now surfaced as a clean `/health` error thanks
+  to the `_initialize_model` exception-handling fix above, rather than an
+  endless silent `"starting"`. `allenai/OLMoE-1B-7B-0924-Instruct` (~13GB)
+  loads comfortably in the same environment (peaks ~93% only briefly,
+  settles under 65%).

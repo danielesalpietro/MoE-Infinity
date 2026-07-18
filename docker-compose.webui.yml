@@ -30,6 +30,14 @@
 # verbose logging on all the time. SYS_PTRACE is granted so `py-spy dump
 # --pid 1` can be run inside the container for a live stack trace when
 # logging alone isn't enough to tell whether it's stuck or just slow.
+#
+# docker-proxy (tecnativa/docker-socket-proxy) gives model-status's
+# dashboard read-only access to container status/stats/logs, without
+# exposing the raw Docker socket (which is otherwise equivalent to root on
+# the host). Only GET on containers/info is enabled; POST (start/stop/exec/
+# create/...) stays disabled. model-status further restricts which
+# container names it will query (see DASHBOARD_CONTAINERS in app.py) even
+# though the proxy itself can see every container on the host.
 
 services:
   moe-infinity:
@@ -93,10 +101,18 @@ services:
     restart: unless-stopped
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
+      HOST_RAM_TOTAL_GB: ${HOST_RAM_TOTAL_GB:-}
+      DOCKER_PROXY_URL: http://docker-proxy:2375
+      OFFLOAD_DIR: /mnt/offload
+      OPEN_WEBUI_DATA_DIR: /mnt/open_webui_data
     ports:
       - "8600:8600"
     volumes:
       - moe_hf_cache:/root/.cache/huggingface:ro
+      - moe_offload:/mnt/offload:ro
+      - open_webui_data:/mnt/open_webui_data:ro
+    depends_on:
+      - docker-proxy
     deploy:
       resources:
         reservations:
@@ -104,6 +120,19 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: moe-infinity-docker-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # No ports published -- reachable only from other services on this
+    # compose network (model-status), never from the host.
 
 volumes:
   moe_offload:

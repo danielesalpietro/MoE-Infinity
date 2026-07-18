@@ -5,7 +5,7 @@
 <title>MoE-Infinity Model Status</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font-family: -apple-system, Segoe UI, sans-serif; margin: 0; padding: 2rem; max-width: 960px; margin-inline: auto; }
+  body { font-family: -apple-system, Segoe UI, sans-serif; margin: 0; padding: 2rem; max-width: 1100px; margin-inline: auto; }
   h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
   h2 { font-size: 1.05rem; margin-top: 2.5rem; border-bottom: 1px solid #8884; padding-bottom: 0.4rem; }
   .sub { opacity: 0.7; margin-top: 0; margin-bottom: 1.5rem; font-size: 0.9rem; }
@@ -19,6 +19,7 @@
   .badge.neutral { background: #6c757d20; color: #6c757d; }
   form { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
   input[type=text] { flex: 1; min-width: 240px; padding: 0.5rem 0.7rem; border: 1px solid #8886; border-radius: 6px; font-size: 0.9rem; background: transparent; color: inherit; }
+  select { padding: 0.4rem 0.6rem; border-radius: 6px; border: 1px solid #8886; background: transparent; color: inherit; font-size: 0.85rem; }
   button { padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #8886; background: #1e7e3420; color: inherit; cursor: pointer; font-size: 0.9rem; }
   button:hover { background: #1e7e3440; }
   .suggestions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; }
@@ -30,14 +31,72 @@
   code { background: #8882; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
   .empty { opacity: 0.6; font-size: 0.9rem; margin-top: 0.75rem; }
   .err { color: #c0392b; margin-top: 0.75rem; font-size: 0.9rem; }
+
+  /* --- dashboard --- */
+  .gauge-row { display: flex; flex-wrap: wrap; gap: 1.5rem; margin-top: 1rem; }
+  .gauge-card { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; min-width: 140px; }
+  .gauge-card .gauge-title { font-size: 0.8rem; opacity: 0.75; text-align: center; }
+  .gauge-card .gauge-sub { font-size: 0.72rem; opacity: 0.55; text-align: center; }
+  .gauge-svg text { font-family: inherit; }
+  .gauge-pct { font-size: 1.15rem; font-weight: 700; }
+  .gauge-label { font-size: 0.6rem; opacity: 0.6; }
+
+  .status-dot { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; margin-right: 0.4rem; vertical-align: middle; }
+  .status-dot.running { background: #1e7e34; }
+  .status-dot.unhealthy { background: #c0392b; }
+  .status-dot.stopped { background: #6c757d; }
+
+  .log-toolbar { display: flex; gap: 0.6rem; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; }
+  .log-toolbar label { font-size: 0.8rem; opacity: 0.7; }
+  #log-view {
+    margin-top: 0.6rem; background: #0d1117; color: #c9d1d9; border-radius: 8px; padding: 0.9rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.75rem;
+    max-height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  :root[data-theme="light"] #log-view { background: #f6f8fa; color: #24292f; border: 1px solid #8883; }
+  @media (prefers-color-scheme: light) {
+    #log-view { background: #f6f8fa; color: #24292f; border: 1px solid #8883; }
+  }
+  .auto-refresh { font-size: 0.72rem; opacity: 0.55; margin-top: 0.5rem; }
 </style>
 </head>
 <body>
   <h1>MoE-Infinity Model Status</h1>
-  <p class="sub">Read-only view of locally cached models and HuggingFace Hub lookups. Does not download or switch models -- use <code>start-webui.ps1</code> / <code>start-webui.sh</code> for that.</p>
+  <p class="sub">Read-only dashboard for the WebUI stack. Does not download or switch models, restart containers, or write anything -- use <code>start-webui.ps1</code> / <code>start-webui.sh</code> for that.</p>
+
+  <h2>Dashboard</h2>
+  <div class="gauge-row" id="gauge-row">
+    <div class="empty">Loading resource gauges...</div>
+  </div>
+  <p class="auto-refresh" id="dashboard-updated"></p>
+
+  <h3 style="margin-top:1.5rem; font-size:0.95rem;">Services</h3>
+  <table id="containers-table" style="display:none">
+    <thead><tr><th>Container</th><th>Status</th><th>CPU</th><th>Memory</th></tr></thead>
+    <tbody id="containers-tbody"></tbody>
+  </table>
+  <div id="containers-empty" class="empty" style="display:none">Container status unavailable (docker-proxy not reachable).</div>
+
+  <h3 style="margin-top:1.5rem; font-size:0.95rem;">Logs</h3>
+  <div class="log-toolbar">
+    <label for="log-select">Container:</label>
+    <select id="log-select">
+      <option value="moe-infinity-server" selected>moe-infinity-server</option>
+      <option value="moe-infinity-open-webui">moe-infinity-open-webui</option>
+      <option value="moe-infinity-model-status">moe-infinity-model-status</option>
+      <option value="moe-infinity-docker-proxy">moe-infinity-docker-proxy</option>
+    </select>
+    <label for="log-tail">Lines:</label>
+    <select id="log-tail">
+      <option value="100">100</option>
+      <option value="200" selected>200</option>
+      <option value="500">500</option>
+    </select>
+    <label><input type="checkbox" id="log-auto" checked> auto-refresh (5s)</label>
+  </div>
+  <pre id="log-view">Loading...</pre>
 
   <h2>Locally cached models</h2>
-  <div id="local-resources" class="empty">Loading host resources...</div>
   <table id="local-table" style="display:none">
     <thead><tr><th>Model</th><th>Size on disk</th><th>Download status</th></tr></thead>
     <tbody id="local-tbody"></tbody>
@@ -64,14 +123,137 @@ function fmtGB(gb) {
   return `${gb} GB`;
 }
 
-async function loadResources() {
-  const res = await fetch("/api/system-resources");
-  const r = await res.json();
-  const gpu = r.gpu_name ? `${r.gpu_name} (${fmtGB(r.vram_total_gb)} VRAM)` : "no GPU detected";
-  $("local-resources").innerHTML =
-    `Host: ${fmtGB(r.ram_total_gb)} RAM &middot; ${fmtGB(r.disk_free_gb)} free disk &middot; ${gpu}`;
-  return r;
+function gaugeColor(pct) {
+  if (pct === null || pct === undefined) return "#6c757d";
+  if (pct >= 90) return "#c0392b";
+  if (pct >= 75) return "#b8860b";
+  return "#1e7e34";
 }
+
+// Renders a donut gauge as inline SVG. pct: 0-100 or null (unknown -> gray, "?").
+function gaugeSvg(pct) {
+  const r = 34, stroke = 9, c = 2 * Math.PI * r;
+  const clamped = pct === null || pct === undefined ? 0 : Math.max(0, Math.min(100, pct));
+  const offset = c - (clamped / 100) * c;
+  const color = gaugeColor(pct);
+  const label = pct === null || pct === undefined ? "?" : `${Math.round(pct)}%`;
+  return `
+    <svg class="gauge-svg" width="88" height="88" viewBox="0 0 88 88">
+      <circle cx="44" cy="44" r="${r}" fill="none" stroke="currentColor" stroke-opacity="0.15" stroke-width="${stroke}"/>
+      <circle cx="44" cy="44" r="${r}" fill="none" stroke="${color}" stroke-width="${stroke}"
+        stroke-dasharray="${c}" stroke-dashoffset="${offset}" stroke-linecap="round"
+        transform="rotate(-90 44 44)"/>
+      <text x="44" y="48" text-anchor="middle" class="gauge-pct" fill="currentColor">${label}</text>
+    </svg>`;
+}
+
+function gaugeCard(title, pct, sub) {
+  return `<div class="gauge-card">
+    ${gaugeSvg(pct)}
+    <div class="gauge-title">${title}</div>
+    ${sub ? `<div class="gauge-sub">${sub}</div>` : ""}
+  </div>`;
+}
+
+async function loadDashboardResources() {
+  try {
+    const res = await fetch("/api/dashboard/resources");
+    const r = await res.json();
+    const cards = [];
+
+    if (r.host_ram) {
+      cards.push(gaugeCard(
+        "Host RAM",
+        r.host_ram.docker_used_pct,
+        `${fmtGB(r.host_ram.docker_used_gb)} docker / ${fmtGB(r.host_ram.total_gb)} total`
+      ));
+    }
+    cards.push(gaugeCard(
+      "Docker RAM",
+      r.docker_ram.used_pct,
+      `${fmtGB(r.docker_ram.used_gb)} / ${fmtGB(r.docker_ram.total_gb)}`
+    ));
+    if (r.disk_system) {
+      cards.push(gaugeCard(
+        "System disk",
+        r.disk_system.used_pct,
+        `${fmtGB(r.disk_system.used_gb)} / ${fmtGB(r.disk_system.total_gb)}`
+      ));
+    }
+    const volTotal = r.disk_volumes_total_gb;
+    const volPct = r.disk_system && r.disk_system.total_gb
+      ? Math.round((volTotal / r.disk_system.total_gb) * 100) : null;
+    cards.push(gaugeCard(
+      "Container volumes",
+      volPct,
+      `${fmtGB(volTotal)} (hf cache + offload + webui)`
+    ));
+
+    $("gauge-row").innerHTML = cards.join("");
+    $("dashboard-updated").textContent =
+      `Updated ${new Date().toLocaleTimeString()}` +
+      (r.gpu_name ? ` · ${r.gpu_name} (${fmtGB(r.vram_total_gb)} VRAM)` : "");
+  } catch (e) {
+    $("gauge-row").innerHTML = `<p class="err">Failed to load resources: ${e}</p>`;
+  }
+}
+
+async function loadDashboardContainers() {
+  try {
+    const res = await fetch("/api/dashboard/containers");
+    const r = await res.json();
+    if (!r.available) {
+      $("containers-table").style.display = "none";
+      $("containers-empty").style.display = "block";
+      return;
+    }
+    $("containers-table").style.display = "table";
+    $("containers-empty").style.display = "none";
+    const tbody = $("containers-tbody");
+    tbody.innerHTML = "";
+    for (const c of r.containers) {
+      const dotClass = c.state === "running"
+        ? (c.mem_pct !== null && c.mem_pct >= 95 ? "unhealthy" : "running")
+        : "stopped";
+      tbody.innerHTML += `<tr>
+        <td><span class="status-dot ${dotClass}"></span>${c.name}</td>
+        <td>${c.status ?? "unknown"}</td>
+        <td>${c.cpu_pct !== null && c.cpu_pct !== undefined ? c.cpu_pct + "%" : "-"}</td>
+        <td>${c.mem_used_gb !== null && c.mem_used_gb !== undefined ? fmtGB(c.mem_used_gb) + (c.mem_pct !== null ? ` (${c.mem_pct}%)` : "") : "-"}</td>
+      </tr>`;
+    }
+  } catch (e) {
+    $("containers-empty").textContent = `Failed to load container status: ${e}`;
+    $("containers-empty").style.display = "block";
+    $("containers-table").style.display = "none";
+  }
+}
+
+async function loadLogs() {
+  const container = $("log-select").value;
+  const tail = $("log-tail").value;
+  try {
+    const res = await fetch(`/api/dashboard/logs?container=${encodeURIComponent(container)}&tail=${tail}`);
+    const text = await res.text();
+    const view = $("log-view");
+    const wasAtBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 20;
+    view.textContent = text;
+    if (wasAtBottom) view.scrollTop = view.scrollHeight;
+  } catch (e) {
+    $("log-view").textContent = `Failed to load logs: ${e}`;
+  }
+}
+
+let logInterval = null;
+function scheduleLogRefresh() {
+  if (logInterval) clearInterval(logInterval);
+  if ($("log-auto").checked) {
+    logInterval = setInterval(loadLogs, 5000);
+  }
+}
+$("log-select").addEventListener("change", loadLogs);
+$("log-tail").addEventListener("change", loadLogs);
+$("log-auto").addEventListener("change", scheduleLogRefresh);
 
 async function loadLocalModels() {
   const res = await fetch("/api/local-models");
@@ -155,9 +337,14 @@ $("lookup-form").addEventListener("submit", (e) => {
   if (repoId) doLookup(repoId);
 });
 
-loadResources();
+loadDashboardResources();
+loadDashboardContainers();
+loadLogs();
 loadLocalModels();
 loadKnownModels();
+scheduleLogRefresh();
+setInterval(loadDashboardResources, 5000);
+setInterval(loadDashboardContainers, 5000);
 </script>
 </body>
 </html>
