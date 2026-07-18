@@ -102,6 +102,8 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HOST_RAM_TOTAL_GB: ${HOST_RAM_TOTAL_GB:-}
+      HOST_GPU_SHARED_USED_GB: ${HOST_GPU_SHARED_USED_GB:-}
+      HOST_GPU_SHARED_TOTAL_GB: ${HOST_GPU_SHARED_TOTAL_GB:-}
       DOCKER_PROXY_URL: http://docker-proxy:2375
       OFFLOAD_DIR: /mnt/offload
       OPEN_WEBUI_DATA_DIR: /mnt/open_webui_data

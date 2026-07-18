@@ -346,7 +346,7 @@ Configuration can also be kept in a `.env` file instead of env-var prefixes — 
 
 [http://localhost:8600](http://localhost:8600) is a **read-only** page (`model-status` service) that shows:
 
-- **Dashboard**: RAM (host total, RAM assigned to Docker Desktop's VM, RAM actually in use) and disk (host free/used, total size of the stack's Docker volumes) as gauges; live status/CPU/memory of `moe-infinity-server`, `open-webui`, `model-status` and `docker-proxy`; and a log viewer (pick a container, auto-refreshes every 5s) — this is what we used throughout development to see whether the server was genuinely stuck or just slow.
+- **Dashboard**: RAM (host total, RAM assigned to Docker Desktop's VM, RAM actually in use), disk (host free/used, total size of the stack's Docker volumes), and GPU memory (dedicated VRAM via `nvidia-smi`; shared/pinned system RAM via Windows performance counters, host-only, sent in by `start-webui.ps1`/`.sh`) as gauges; live status/CPU/memory of `moe-infinity-server`, `open-webui`, `model-status` and `docker-proxy`; and a log viewer (pick a container, auto-refreshes every 5s) — this is what we used throughout development to see whether the server was genuinely stuck or just slow.
 - which models are already cached locally, their size on disk, and whether the download completed
 - whether HuggingFace Hub has a newer commit than what you have cached
 - for any HuggingFace repo id you look up: total download size, and a pass/warn/fail check of that model's size against this host's RAM, free disk, and VRAM (heuristics calibrated from real RAM-exhaustion incidents hit while building this stack — see [`model-status/app.py`](model-status/app.py))

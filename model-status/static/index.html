@@ -189,6 +189,21 @@ async function loadDashboardResources() {
       `${fmtGB(volTotal)} (hf cache + offload + webui)`
     ));
 
+    if (r.gpu_dedicated) {
+      cards.push(gaugeCard(
+        "GPU Memory (dedicated)",
+        r.gpu_dedicated.used_pct,
+        `${fmtGB(r.gpu_dedicated.used_gb)} / ${fmtGB(r.gpu_dedicated.total_gb)}`
+      ));
+    }
+    if (r.gpu_shared) {
+      cards.push(gaugeCard(
+        "GPU Memory (shared)",
+        r.gpu_shared.used_pct,
+        `${fmtGB(r.gpu_shared.used_gb)} / ~${fmtGB(r.gpu_shared.total_gb)} (est.)`
+      ));
+    }
+
     $("gauge-row").innerHTML = cards.join("");
     $("dashboard-updated").textContent =
       `Updated ${new Date().toLocaleTimeString()}` +

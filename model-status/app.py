@@ -149,6 +149,66 @@ def known_models() -> JSONResponse:
     return JSONResponse({"models": KNOWN_MODELS})
 
 
+def _gpu_info() -> dict[str, Any]:
+    """Dedicated GPU memory via nvidia-smi -- real, always available on any
+    host with GPU passthrough working. There is no Linux/nvidia-smi
+    equivalent for Windows' "shared GPU memory" (WDDM concept, pinned
+    system RAM mapped for the GPU) -- see HOST_GPU_SHARED_*_GB, passed in
+    from the host by start-webui.ps1/.sh, for that."""
+    info: dict[str, Any] = {
+        "gpu_name": None,
+        "vram_total_gb": None,
+        "vram_used_gb": None,
+        "vram_used_pct": None,
+    }
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.total,memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        first_line = result.stdout.strip().splitlines()[0]
+        name_part, total_part, used_part = first_line.split(",")
+        info["gpu_name"] = name_part.strip()
+        total_gb = round(int(total_part.strip()) / 1024, 1)
+        used_gb = round(int(used_part.strip()) / 1024, 2)
+        info["vram_total_gb"] = total_gb
+        info["vram_used_gb"] = used_gb
+        if total_gb:
+            info["vram_used_pct"] = round(used_gb / total_gb * 100, 1)
+    except (
+        subprocess.SubprocessError,
+        FileNotFoundError,
+        IndexError,
+        ValueError,
+    ):
+        pass
+    return info
+
+
+def _host_gpu_shared() -> Optional[dict[str, Any]]:
+    used = os.environ.get("HOST_GPU_SHARED_USED_GB")
+    total = os.environ.get("HOST_GPU_SHARED_TOTAL_GB")
+    if not used or not total:
+        return None
+    try:
+        used_gb = float(used)
+        total_gb = float(total)
+    except ValueError:
+        return None
+    return {
+        "used_gb": used_gb,
+        "total_gb": total_gb,
+        "used_pct": round(used_gb / total_gb * 100, 1) if total_gb else None,
+    }
+
+
 @app.get("/api/system-resources")
 def system_resources() -> JSONResponse:
     ram_total_gb = _bytes_to_gb(psutil.virtual_memory().total)
@@ -160,38 +220,14 @@ def system_resources() -> JSONResponse:
     except OSError:
         pass
 
-    gpu_name = None
-    vram_total_gb = None
-    try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=name,memory.total",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-        )
-        first_line = result.stdout.strip().splitlines()[0]
-        name_part, vram_mib_part = first_line.rsplit(",", 1)
-        gpu_name = name_part.strip()
-        vram_total_gb = round(int(vram_mib_part.strip()) / 1024, 1)
-    except (
-        subprocess.SubprocessError,
-        FileNotFoundError,
-        IndexError,
-        ValueError,
-    ):
-        pass
+    gpu = _gpu_info()
 
     return JSONResponse(
         {
             "ram_total_gb": ram_total_gb,
             "disk_free_gb": disk_free_gb,
-            "gpu_name": gpu_name,
-            "vram_total_gb": vram_total_gb,
+            "gpu_name": gpu["gpu_name"],
+            "vram_total_gb": gpu["vram_total_gb"],
         }
     )
 
@@ -253,7 +289,15 @@ def dashboard_resources() -> JSONResponse:
         if size is not None:
             total_volume_bytes += size
 
-    base_resources = json.loads(system_resources().body)
+    gpu = _gpu_info()
+    gpu_dedicated = None
+    if gpu["vram_total_gb"] is not None:
+        gpu_dedicated = {
+            "used_gb": gpu["vram_used_gb"],
+            "total_gb": gpu["vram_total_gb"],
+            "used_pct": gpu["vram_used_pct"],
+        }
+    gpu_shared = _host_gpu_shared()
 
     return JSONResponse(
         {
@@ -262,8 +306,10 @@ def dashboard_resources() -> JSONResponse:
             "disk_system": disk_system,
             "disk_volumes": volumes,
             "disk_volumes_total_gb": _bytes_to_gb(total_volume_bytes),
-            "gpu_name": base_resources.get("gpu_name"),
-            "vram_total_gb": base_resources.get("vram_total_gb"),
+            "gpu_name": gpu["gpu_name"],
+            "vram_total_gb": gpu["vram_total_gb"],
+            "gpu_dedicated": gpu_dedicated,
+            "gpu_shared": gpu_shared,
         }
     )
 

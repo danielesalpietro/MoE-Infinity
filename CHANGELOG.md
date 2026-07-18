@@ -84,6 +84,18 @@ separate from the existing build/test Docker images.
   export `HOST_RAM_TOTAL_GB` (best effort) for the host-RAM gauge, since
   `model-status` can only see what's inside Docker Desktop's WSL2 VM
   otherwise.
+- Dashboard: two more gauges, **GPU Memory (dedicated)** and **GPU Memory
+  (shared)**, mirroring Windows Task Manager's GPU tab. Dedicated VRAM
+  comes from `nvidia-smi --query-gpu=memory.used,memory.total`, queryable
+  from inside the container. "Shared" GPU memory (pinned system RAM mapped
+  for the GPU) is a Windows/WDDM concept with no Linux/nvidia-smi
+  equivalent, so `start-webui.ps1`/`.sh` read it host-side via
+  `Get-Counter '\GPU Adapter Memory(*)\Shared Usage'` (best effort, and
+  Windows-only -- skipped on native Linux) and pass it in as
+  `HOST_GPU_SHARED_USED_GB`/`HOST_GPU_SHARED_TOTAL_GB`. There's no "Shared
+  Limit" perf counter on most systems, so the total is an *estimate* (half
+  of `HOST_RAM_TOTAL_GB`, Windows' default shared-memory pool policy) and
+  is labeled "(est.)" in the UI rather than presented as authoritative.
 
 ### Fixed (moe_infinity library)
 

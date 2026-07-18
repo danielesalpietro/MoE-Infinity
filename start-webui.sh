@@ -21,6 +21,22 @@ elif command -v powershell.exe >/dev/null 2>&1; then
     2>/dev/null | tr -d '\r')"
 fi
 
+# Best-effort: "shared GPU memory" (pinned system RAM mapped for the GPU)
+# is a Windows/WDDM concept with no Linux/nvidia-smi equivalent, so read it
+# from the host via powershell.exe when available. No "Shared Limit" perf
+# counter exists on most systems, so the total is estimated as half of
+# host RAM (Windows' default shared-GPU-memory pool policy) -- clearly
+# labeled as an estimate in the dashboard. Skipped entirely on native
+# Linux, where this metric doesn't apply.
+if command -v powershell.exe >/dev/null 2>&1; then
+  export HOST_GPU_SHARED_USED_GB="$(powershell.exe -NoProfile -Command \
+    '(Get-Counter "\GPU Adapter Memory(*)\Shared Usage" -ErrorAction Stop).CounterSamples | Sort-Object CookedValue -Descending | Select-Object -First 1 -ExpandProperty CookedValue | ForEach-Object { [math]::Round($_ / 1GB, 2) }' \
+    2>/dev/null | tr -d '\r')"
+  if [[ -n "${HOST_GPU_SHARED_USED_GB:-}" && -n "${HOST_RAM_TOTAL_GB:-}" ]]; then
+    export HOST_GPU_SHARED_TOTAL_GB="$(awk "BEGIN { printf \"%.1f\", ${HOST_RAM_TOTAL_GB} * 0.5 }")"
+  fi
+fi
+
 docker compose -f docker-compose.webui.yml up -d --build
 
 echo ""

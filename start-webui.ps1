@@ -19,6 +19,24 @@ try {
     # Non-fatal -- the dashboard just omits the host-RAM gauge.
 }
 
+# Best-effort: "shared GPU memory" (pinned system RAM mapped for the GPU,
+# what Task Manager's GPU tab shows) is a Windows/WDDM concept with no
+# nvidia-smi/Linux equivalent, so it can't be read from inside the
+# container -- read it here instead. There's no "Shared Limit" perf
+# counter on this system, so the total is estimated as half of host RAM
+# (Windows' default shared-GPU-memory pool policy), clearly labeled as an
+# estimate in the dashboard.
+try {
+    $sharedSamples = (Get-Counter '\GPU Adapter Memory(*)\Shared Usage' -ErrorAction Stop).CounterSamples
+    $maxShared = ($sharedSamples | Sort-Object CookedValue -Descending | Select-Object -First 1).CookedValue
+    $env:HOST_GPU_SHARED_USED_GB = [math]::Round($maxShared / 1GB, 2)
+    if ($env:HOST_RAM_TOTAL_GB) {
+        $env:HOST_GPU_SHARED_TOTAL_GB = [math]::Round([double]$env:HOST_RAM_TOTAL_GB * 0.5, 1)
+    }
+} catch {
+    # Non-fatal -- the dashboard just omits the shared-GPU-memory gauge.
+}
+
 docker compose -f docker-compose.webui.yml up -d --build
 
 Write-Host ""
