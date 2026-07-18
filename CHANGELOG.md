@@ -30,6 +30,19 @@ separate from the existing build/test Docker images.
   launch scripts wrapping `docker compose -f docker-compose.webui.yml up -d
   --build`, with an optional model override argument, mirroring
   NORTHSTREAM's `start-addon.ps1`/`.sh` pattern.
+- [`check-webui-status.ps1`](check-webui-status.ps1) / [`check-webui-status.sh`](check-webui-status.sh) —
+  monitoring script for the stack once it's running: container status,
+  HuggingFace cache size (proxy for model download progress), `/offload`
+  dir size, `/health` endpoint, and the last 15 log lines from
+  `moe-infinity-server`. Useful during first-time model loading, which can
+  take a long time and doesn't otherwise expose progress.
+- [`check-system-requirements.ps1`](check-system-requirements.ps1) / [`check-system-requirements.sh`](check-system-requirements.sh) —
+  pre-flight check to run before `start-webui`: Docker/Compose, CPU cores,
+  RAM, GPU/VRAM, WSL2 memory limit (`.wslconfig`, Windows only), and free
+  disk space, checked against min/recommended thresholds (4/8 cores,
+  16/32GB RAM, 8/16GB VRAM, 40/80GB free disk) derived from this session's
+  build of `deepseek-ai/DeepSeek-V2-Lite-Chat` (~30GB download). Exits
+  0/1/2 for ready/warnings/failures.
 
 ### Changed
 
