@@ -1,0 +1,70 @@
+# Serve a MoE-Infinity model through an OpenAI-compatible API and a chat
+# WebUI (Open WebUI, https://github.com/open-webui/open-webui -- the same
+# chat UI used by the NORTHSTREAM lab, here pointed at MoE-Infinity instead
+# of Ollama).
+#
+# This stack is for interacting with a model, not for running the build/test
+# suite -- see docker/Dockerfile + docker/Dockerfile.benchmark for that.
+#
+# Usage:
+#   docker compose -f docker-compose.webui.yml up -d --build
+#   open http://localhost:3000
+#
+# Requires an NVIDIA GPU + the NVIDIA Container Toolkit on the host.
+# Override the served model with, e.g.:
+#   MOE_MODEL=openai/gpt-oss-20b docker compose -f docker-compose.webui.yml up -d --build
+
+services:
+  moe-infinity:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.serve
+    container_name: moe-infinity-server
+    restart: unless-stopped
+    environment:
+      MOE_MODEL: ${MOE_MODEL:-deepseek-ai/DeepSeek-V2-Lite-Chat}
+      MOE_OFFLOAD_DIR: /offload
+      MOE_DEVICE_MEMORY_RATIO: ${MOE_DEVICE_MEMORY_RATIO:-0.5}
+      MOE_KV_CACHE_RATIO: ${MOE_KV_CACHE_RATIO:-0.15}
+      MOE_MAX_BATCH_SIZE: ${MOE_MAX_BATCH_SIZE:-8}
+      MOE_API_KEYS: ${MOE_API_KEYS:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - moe_offload:/offload
+      - moe_hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: moe-infinity-open-webui
+    restart: unless-stopped
+    environment:
+      WEBUI_NAME: MoE-Infinity Chat
+      ENABLE_OLLAMA_API: "false"
+      OPENAI_API_BASE_URL: http://moe-infinity:8000/v1
+      OPENAI_API_KEY: ${MOE_API_KEYS:-moe-infinity-local}
+    ports:
+      - "3000:8080"
+    volumes:
+      - open_webui_data:/app/backend/data
+    depends_on:
+      - moe-infinity
+
+volumes:
+  moe_offload:
+  moe_hf_cache:
+  open_webui_data:

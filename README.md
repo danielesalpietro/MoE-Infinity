@@ -34,6 +34,7 @@ Key benefits include:
     - [Running Inference](#running-inference)
     - [Benchmarking](#benchmarking)
     - [OpenAI-Compatible Server (Continuous Batching)](#openai-compatible-server-continuous-batching)
+    - [Chat WebUI (Docker)](#chat-webui-docker)
 - [ContextPilot Integration (Optional)](#contextpilot-integration-optional)
 - [Architecture](#architecture)
 - [Release Plan](#release-plan)
@@ -297,6 +298,28 @@ You can also use the `openai` Python package:
 pip install openai
 python tests/python/integration/test_oai_completions.py
 python tests/python/integration/test_oai_chat_completions.py
+```
+
+### Chat WebUI (Docker)
+
+For interactive use (rather than curl/the `openai` package), [`docker-compose.webui.yml`](docker-compose.webui.yml) starts the OpenAI-compatible server together with [Open WebUI](https://github.com/open-webui/open-webui) as a chat frontend, wired together via `OPENAI_API_BASE_URL`:
+
+```bash
+docker compose -f docker-compose.webui.yml up -d --build
+```
+
+Open [http://localhost:3000](http://localhost:3000) — on first launch, Open WebUI asks you to create a local admin account, after which the model configured via `MOE_MODEL` (default `deepseek-ai/DeepSeek-V2-Lite-Chat`) is available in the model picker. Override the served model without editing the file:
+
+```bash
+MOE_MODEL=openai/gpt-oss-20b docker compose -f docker-compose.webui.yml up -d --build
+```
+
+This requires an NVIDIA GPU with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host. The `moe-infinity` service builds from [`docker/Dockerfile.serve`](docker/Dockerfile.serve), which is dedicated to serving a model (not to running the test suite — see [`docker/Dockerfile`](docker/Dockerfile) for that).
+
+Stop the stack:
+
+```bash
+docker compose -f docker-compose.webui.yml down
 ```
 
 ## ContextPilot Integration (Optional)
