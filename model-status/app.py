@@ -19,14 +19,14 @@ import struct
 import subprocess
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from huggingface_hub import HfApi
-from huggingface_hub.utils import HfHubHTTPError
 import psutil
 
 HF_CACHE_DIR = Path(os.environ.get("HF_CACHE_DIR", "/root/.cache/huggingface"))
@@ -67,6 +67,15 @@ WEIGHT_EXTENSIONS = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
 # Example checkpoints from the README's "Supported Models" table -- a
 # starting point for the lookup form, not an exhaustive list.
 KNOWN_MODELS = [
+    # Tiny randomly-initialized checkpoints (a few MB) -- T0 smoke-test
+    # baselines that exercise the full offload/serve pipeline without the
+    # RAM/VRAM pressure of a real model. Not for actual serving quality.
+    # Must declare torch_dtype=bfloat16 in config.json -- the fused MoE CUDA
+    # kernel (extensions/kernel/fused_moe_mlp.cu) hard-requires BF16 and
+    # throws "fused_moe_ffn_into: BF16 only" for fp16/fp32 checkpoints
+    # (confirmed against yujiepan/mixtral-tiny-random, which is fp16).
+    {"repo_id": "vprovorg/tiny-random-Mixtral-8x7B-v0.1", "family": "Mixtral (tiny/test, bf16)"},
+    {"repo_id": "yujiepan/qwen3-moe-tiny-random", "family": "Qwen3-MoE (tiny/test, bf16)"},
     {"repo_id": "deepseek-ai/DeepSeek-V2-Lite-Chat", "family": "DeepSeek-V2"},
     {"repo_id": "deepseek-ai/DeepSeek-V3", "family": "DeepSeek-V3"},
     {"repo_id": "mistralai/Mixtral-8x7B-Instruct-v0.1", "family": "Mixtral"},
@@ -131,22 +140,12 @@ def _local_model_status(model_dir: Path) -> dict[str, Any]:
     }
 
 
-@app.get("/api/local-models")
-def local_models() -> JSONResponse:
-    if not HF_HUB_DIR.is_dir():
-        return JSONResponse({"models": []})
-
-    models = []
-    for entry in sorted(HF_HUB_DIR.iterdir()):
-        if entry.is_dir() and entry.name.startswith("models--"):
-            models.append(_local_model_status(entry))
-
-    return JSONResponse({"models": models})
-
-
-@app.get("/api/known-models")
-def known_models() -> JSONResponse:
-    return JSONResponse({"models": KNOWN_MODELS})
+def _disk_free_gb() -> Optional[float]:
+    try:
+        usage = shutil.disk_usage(HF_CACHE_DIR if HF_CACHE_DIR.exists() else "/")
+        return _bytes_to_gb(usage.free)
+    except OSError:
+        return None
 
 
 def _gpu_info() -> dict[str, Any]:
@@ -209,29 +208,6 @@ def _host_gpu_shared() -> Optional[dict[str, Any]]:
     }
 
 
-@app.get("/api/system-resources")
-def system_resources() -> JSONResponse:
-    ram_total_gb = _bytes_to_gb(psutil.virtual_memory().total)
-
-    disk_free_gb = None
-    try:
-        usage = shutil.disk_usage(HF_CACHE_DIR if HF_CACHE_DIR.exists() else "/")
-        disk_free_gb = _bytes_to_gb(usage.free)
-    except OSError:
-        pass
-
-    gpu = _gpu_info()
-
-    return JSONResponse(
-        {
-            "ram_total_gb": ram_total_gb,
-            "disk_free_gb": disk_free_gb,
-            "gpu_name": gpu["gpu_name"],
-            "vram_total_gb": gpu["vram_total_gb"],
-        }
-    )
-
-
 def _dir_size_bytes(path: Path) -> Optional[int]:
     if not path.is_dir():
         return None
@@ -252,6 +228,10 @@ def dashboard_resources() -> JSONResponse:
         "total_gb": _bytes_to_gb(mem.total),
         "used_gb": _bytes_to_gb(mem.used),
         "used_pct": mem.percent,
+    }
+    cpu = {
+        "count": psutil.cpu_count(logical=True),
+        "used_pct": psutil.cpu_percent(interval=0.1),
     }
 
     host_ram = None
@@ -301,6 +281,7 @@ def dashboard_resources() -> JSONResponse:
 
     return JSONResponse(
         {
+            "cpu": cpu,
             "docker_ram": docker_ram,
             "host_ram": host_ram,
             "disk_system": disk_system,
@@ -454,98 +435,89 @@ def _hf_model_size_bytes(info: Any) -> int:
     return total
 
 
-def _compatibility(model_size_gb: float, resources: dict[str, Any]) -> dict[str, Any]:
-    # Heuristics derived empirically in this session: MoE-Infinity's
-    # offload-construction phase peaks at roughly 0.6-0.7x the model's
-    # on-disk weight size in host RAM, and needs comparable free disk
-    # headroom on top of the download itself. Treat these as rough
-    # guidance, not a guarantee -- actual peak usage depends on the model
-    # architecture (number of experts, hidden size, etc).
-    checks = []
-
-    ram_total_gb = resources.get("ram_total_gb")
-    if ram_total_gb is not None:
-        recommended_ram = round(model_size_gb * 1.0, 1)
-        min_ram = round(model_size_gb * 0.65, 1)
-        if ram_total_gb >= recommended_ram:
-            checks.append({"item": "RAM", "level": "pass",
-                            "detail": f"{ram_total_gb}GB available (recommended {recommended_ram}GB+)"})
-        elif ram_total_gb >= min_ram:
-            checks.append({"item": "RAM", "level": "warn",
-                            "detail": f"{ram_total_gb}GB available (minimum {min_ram}GB, recommended {recommended_ram}GB+) -- offload construction may be slow or swap"})
-        else:
-            checks.append({"item": "RAM", "level": "fail",
-                            "detail": f"{ram_total_gb}GB available, below estimated minimum {min_ram}GB"})
-
-    disk_free_gb = resources.get("disk_free_gb")
-    if disk_free_gb is not None:
-        needed_disk = round(model_size_gb * 1.3, 1)
-        if disk_free_gb >= needed_disk:
-            checks.append({"item": "Disk", "level": "pass",
-                            "detail": f"{disk_free_gb}GB free (needs ~{needed_disk}GB for download + offload)"})
-        else:
-            checks.append({"item": "Disk", "level": "fail",
-                            "detail": f"{disk_free_gb}GB free, below estimated ~{needed_disk}GB needed"})
-
-    vram_total_gb = resources.get("vram_total_gb")
-    if vram_total_gb is not None:
-        recommended_vram = max(8.0, round(model_size_gb * 0.3, 1))
-        if vram_total_gb >= recommended_vram:
-            checks.append({"item": "VRAM", "level": "pass",
-                            "detail": f"{vram_total_gb}GB VRAM (recommended {recommended_vram}GB+)"})
-        elif vram_total_gb >= 8.0:
-            checks.append({"item": "VRAM", "level": "warn",
-                            "detail": f"{vram_total_gb}GB VRAM (recommended {recommended_vram}GB+); lower MOE_DEVICE_MEMORY_RATIO if you hit OOM"})
-        else:
-            checks.append({"item": "VRAM", "level": "fail",
-                            "detail": f"{vram_total_gb}GB VRAM, below the 8GB floor MoE-Infinity needs"})
-    else:
-        checks.append({"item": "VRAM", "level": "warn", "detail": "no NVIDIA GPU detected from this container"})
-
-    levels = [c["level"] for c in checks]
-    overall = "fail" if "fail" in levels else ("warn" if "warn" in levels else "pass")
-    return {"overall": overall, "checks": checks}
-
-
-@app.get("/api/check-model")
-def check_model(repo_id: str = Query(..., min_length=1)) -> JSONResponse:
+def _remote_model_info(repo_id: str) -> dict[str, Any]:
     api = HfApi(token=HF_TOKEN)
     try:
         info = api.model_info(repo_id, files_metadata=True)
-    except HfHubHTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"HuggingFace Hub lookup failed: {exc}") from exc
-    except Exception as exc:  # noqa: BLE001 -- surface any lookup failure to the caller
-        raise HTTPException(status_code=502, detail=f"HuggingFace Hub lookup failed: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 -- surface any lookup failure per-row instead of failing the whole dashboard
+        return {"repo_id": repo_id, "error": str(exc)}
 
     size_bytes = _hf_model_size_bytes(info)
-    size_gb = _bytes_to_gb(size_bytes)
-    resources = system_resources().body
-    import json as _json
-    resources_dict = _json.loads(resources)
+    return {
+        "repo_id": repo_id,
+        "size_bytes": size_bytes,
+        "size_gb": _bytes_to_gb(size_bytes),
+        "commit": info.sha,
+        "gated": bool(getattr(info, "gated", False)),
+    }
 
-    local_dirname = "models--" + repo_id.replace("/", "--")
-    local_entry = None
-    local_path = HF_HUB_DIR / local_dirname
-    if local_path.is_dir():
-        local_entry = _local_model_status(local_path)
 
-    update_available = None
-    if local_entry and local_entry.get("local_commit"):
-        update_available = local_entry["local_commit"] != info.sha
+@app.get("/api/models")
+def all_models(extra: str = Query("", description="Comma-separated extra repo_ids to include")) -> JSONResponse:
+    local_by_repo: dict[str, dict[str, Any]] = {}
+    if HF_HUB_DIR.is_dir():
+        for entry in sorted(HF_HUB_DIR.iterdir()):
+            if entry.is_dir() and entry.name.startswith("models--"):
+                status = _local_model_status(entry)
+                if status["repo_id"]:
+                    local_by_repo[status["repo_id"]] = status
 
-    return JSONResponse(
-        {
-            "repo_id": repo_id,
-            "remote_commit": info.sha,
-            "size_bytes": size_bytes,
-            "size_gb": size_gb,
-            "gated": bool(getattr(info, "gated", False)),
-            "local": local_entry,
-            "update_available": update_available,
-            "compatibility": _compatibility(size_gb, resources_dict),
-            "start_command": f"MOE_MODEL={repo_id} ./start-webui.sh   (or  .\\start-webui.ps1 -Model {repo_id})",
-        }
-    )
+    extra_ids = [r.strip() for r in extra.split(",") if r.strip()]
+    repo_ids = sorted({*(m["repo_id"] for m in KNOWN_MODELS), *local_by_repo.keys(), *extra_ids})
+
+    remote_by_repo: dict[str, dict[str, Any]] = {}
+    if repo_ids:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(_remote_model_info, repo_id) for repo_id in repo_ids]
+            for fut in as_completed(futures):
+                result = fut.result()
+                remote_by_repo[result["repo_id"]] = result
+
+    disk_free_gb = _disk_free_gb()
+
+    models = []
+    for repo_id in repo_ids:
+        local = local_by_repo.get(repo_id)
+        remote = remote_by_repo.get(repo_id, {})
+        remote_size_gb = remote.get("size_gb")
+        local_size_gb = local["size_gb"] if local else 0.0
+
+        pct_downloaded = None
+        if remote_size_gb:
+            pct_downloaded = round(min(100.0, (local_size_gb / remote_size_gb) * 100), 1)
+
+        delta_gb = None
+        disk_ok = None
+        if remote_size_gb is not None:
+            delta_gb = round(max(0.0, remote_size_gb - local_size_gb), 2)
+            if disk_free_gb is not None:
+                disk_ok = disk_free_gb >= delta_gb
+
+        update_available = None
+        local_commit = local.get("local_commit") if local else None
+        remote_commit = remote.get("commit")
+        if local_commit and remote_commit:
+            update_available = local_commit != remote_commit
+
+        models.append(
+            {
+                "repo_id": repo_id,
+                "downloaded": local is not None,
+                "complete": bool(local["complete"]) if local else False,
+                "local_size_gb": local_size_gb,
+                "remote_size_gb": remote_size_gb,
+                "pct_downloaded": pct_downloaded,
+                "delta_gb": delta_gb,
+                "disk_ok": disk_ok,
+                "local_commit": local_commit,
+                "remote_commit": remote_commit,
+                "update_available": update_available,
+                "gated": remote.get("gated", False),
+                "lookup_error": remote.get("error"),
+            }
+        )
+
+    return JSONResponse({"models": models, "disk_free_gb": disk_free_gb})
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")

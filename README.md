@@ -320,7 +320,7 @@ or with the bundled launch scripts, which also accept an optional model override
 ./start-webui.sh openai/gpt-oss-20b
 ```
 
-Open [http://localhost:3000](http://localhost:3000) — on first launch, Open WebUI asks you to create a local admin account, after which the model configured via `MOE_MODEL` (default `deepseek-ai/DeepSeek-V2-Lite-Chat`) is available in the model picker. Override the served model without editing the file:
+Open [http://localhost:3000](http://localhost:3000) — on first launch, Open WebUI asks you to create a local admin account, after which the model configured via `MOE_MODEL` is available in the model picker. The default, `vprovorg/tiny-random-Mixtral-8x7B-v0.1`, is a randomly-initialized tiny Mixtral checkpoint (a few MB, bfloat16) — a fast smoke test that the offload/serve pipeline itself works, not a model worth chatting with. Point it at a real checkpoint once that's verified:
 
 ```bash
 MOE_MODEL=openai/gpt-oss-20b docker compose -f docker-compose.webui.yml up -d --build
@@ -344,12 +344,10 @@ Configuration can also be kept in a `.env` file instead of env-var prefixes — 
 
 #### Model status page
 
-[http://localhost:8600](http://localhost:8600) is a **read-only** page (`model-status` service) that shows:
+[http://localhost:8600](http://localhost:8600) is a **read-only** dashboard (`model-status` service) that shows:
 
-- **Dashboard**: RAM (host total, RAM assigned to Docker Desktop's VM, RAM actually in use), disk (host free/used, total size of the stack's Docker volumes), and GPU memory (dedicated VRAM via `nvidia-smi`; shared/pinned system RAM via Windows performance counters, host-only, sent in by `start-webui.ps1`/`.sh`) as gauges; live status/CPU/memory of `moe-infinity-server`, `open-webui`, `model-status` and `docker-proxy`; and a log viewer (pick a container, auto-refreshes every 5s) — this is what we used throughout development to see whether the server was genuinely stuck or just slow.
-- which models are already cached locally, their size on disk, and whether the download completed
-- whether HuggingFace Hub has a newer commit than what you have cached
-- for any HuggingFace repo id you look up: total download size, and a pass/warn/fail check of that model's size against this host's RAM, free disk, and VRAM (heuristics calibrated from real RAM-exhaustion incidents hit while building this stack — see [`model-status/app.py`](model-status/app.py))
+- **System**: CPU, RAM, GPU (name + dedicated VRAM via `nvidia-smi`), and disk as stat tiles with usage gauges; live status/CPU/memory of `moe-infinity-server`, `open-webui`, `model-status` and `docker-proxy` under Services; and a log viewer (pick a container, auto-refreshes every 5s) — this is what we used throughout development to see whether the server was genuinely stuck or just slow.
+- **Models**: a single table listing every model from the README's "Supported Models" plus anything already cached locally (add any other HuggingFace repo id via the field above the table). For each: download progress (local size vs. final size, as a segmented meter), the disk space still needed (final size minus what's already downloaded, checked against current free disk space — green/red dot), and whether HuggingFace Hub has a newer commit than what's cached (with both commit ids).
 
 It never downloads anything, restarts `moe-infinity`, or writes anything — it only tells you what to run: `MOE_MODEL=<repo_id> ./start-webui.sh`. Container status/stats/logs come from a `docker-proxy` sidecar ([`tecnativa/docker-socket-proxy`](https://github.com/Tecnativa/docker-socket-proxy)) that only allows read-only `GET` calls against the Docker API (no exec/start/stop/create) — `model-status` never touches the Docker socket directly, and only queries containers belonging to this stack even though the proxy itself can see the whole host.
 

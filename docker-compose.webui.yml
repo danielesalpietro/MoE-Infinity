@@ -11,7 +11,13 @@
 #   open http://localhost:3000
 #
 # Requires an NVIDIA GPU + the NVIDIA Container Toolkit on the host.
-# Override the served model with, e.g.:
+# Defaults to vprovorg/tiny-random-Mixtral-8x7B-v0.1 -- a tiny randomly-initialized
+# Mixtral checkpoint (a few MB, bfloat16) used as a fast T0 smoke-test
+# baseline: it exercises the full offload/serve pipeline in seconds without
+# the RAM/VRAM pressure of a real model. Must be bfloat16 -- the fused MoE
+# CUDA kernel hard-requires BF16 and throws "fused_moe_ffn_into: BF16 only"
+# for fp16/fp32 checkpoints (e.g. yujiepan/mixtral-tiny-random, fp16).
+# Override with a real checkpoint once the pipeline is verified working, e.g.:
 #   MOE_MODEL=openai/gpt-oss-20b docker compose -f docker-compose.webui.yml up -d --build
 #
 # flash-attn is skipped by default (see docker/Dockerfile.serve) to keep the
@@ -49,7 +55,7 @@ services:
     container_name: moe-infinity-server
     restart: unless-stopped
     environment:
-      MOE_MODEL: ${MOE_MODEL:-deepseek-ai/DeepSeek-V2-Lite-Chat}
+      MOE_MODEL: ${MOE_MODEL:-vprovorg/tiny-random-Mixtral-8x7B-v0.1}
       MOE_OFFLOAD_DIR: /offload
       MOE_DEVICE_MEMORY_RATIO: ${MOE_DEVICE_MEMORY_RATIO:-0.5}
       MOE_KV_CACHE_RATIO: ${MOE_KV_CACHE_RATIO:-0.15}

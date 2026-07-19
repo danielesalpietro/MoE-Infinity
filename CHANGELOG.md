@@ -134,6 +134,30 @@ in this stack even though it's listed as a supported architecture:
   for OLMoE's expert shape (`intermediate_size=1024` vs
   `hidden_size=2048`), producing degenerate output and eventually crashing
   the process -- not fixed here, needs a native-kernel-level look.
+- `moe_infinity/runtime/model_offload.py`, `setup_archer_hooks()`: found
+  while hunting for a small, fast T0 model to validate the offload pipeline
+  without the host-RAM pressure that crashes `DeepSeek-V2-Lite-Chat` (see
+  Notes). Tiny test checkpoints commonly tie the LM head to the input
+  embeddings to save space (`tie_word_embeddings: true`) -- when
+  `lm_head.weight` has no separate tensor id for that reason, the code
+  unconditionally treated it as "the NLLB MoE case" and reached for
+  `model.model.encoder.embed_tokens` / `.decoder.embed_tokens`, which don't
+  exist on any decoder-only architecture (`MixtralModel`, `Qwen3MoeModel`,
+  etc.) -- `AttributeError: 'MixtralModel' object has no attribute
+  'encoder'`. Now it checks whether the model actually has encoder/decoder
+  submodules (true only for NLLB-MoE) and falls back to the single
+  `model.model.embed_tokens` decoder-only models actually have. Confirmed
+  fix against `vprovorg/tiny-random-Mixtral-8x7B-v0.1` (tiny, bfloat16,
+  tied embeddings) -- loads, serves, and returns completions via both
+  `/v1/completions` and `/v1/chat/completions` (the latter needed a
+  `chat_template` patched into the cached tokenizer config too, since the
+  checkpoint doesn't ship one -- a local cache edit, not a code fix).
+  Separately confirmed the fused MoE CUDA kernel is BF16-only
+  (`fused_moe_ffn_into: BF16 only`, `extensions/kernel/fused_moe_mlp.cu`) --
+  an fp16 tiny checkpoint (`yujiepan/mixtral-tiny-random`) fails there
+  regardless of this fix, which is why the bf16 `vprovorg` one was picked
+  as this stack's default T0 model instead (see `docker-compose.webui.yml`,
+  `.env.example`, `model-status/app.py`'s `KNOWN_MODELS`).
 
 ### Changed
 
@@ -154,6 +178,33 @@ in this stack even though it's listed as a supported architecture:
   install -e .` step was still pulling in and building flash-attn from
   source regardless. `docker/Dockerfile.serve` now strips flash-attn from
   `requirements.txt` a second time, in-place, after `COPY . .`.
+- [`check-system-requirements.ps1`](check-system-requirements.ps1): the disk
+  check only ever looked at free space on `C:`, but Docker Desktop's WSL2
+  backend stores images, volumes, and any named-volume model cache inside a
+  distro's own virtual disk (`ext4.vhdx`), whose location is independent of
+  the Windows install drive -- easy to move via Docker Desktop's Settings >
+  Resources > Advanced, or `wsl --manage <Distro> --move`, and on this
+  session's own dev machine the `docker-desktop`/`docker-desktop-data`
+  distros do in fact live on `D:`, not `C:`. The script now also resolves
+  every registered WSL distro's real location from
+  `HKCU:\...\Lxss\<GUID>\BasePath` and checks free space on whichever
+  drive(s) actually host them, alongside (not instead of) the existing `C:`
+  check.
+- `model-status`: merged the "Locally cached models" and "Look up a model"
+  sections into a single **Models** table (every README-listed model plus
+  whatever's already cached, with an "Add" field for anything else) showing
+  download progress as a segmented meter, the disk space still needed for
+  each (final size minus what's already downloaded, checked against current
+  free disk and shown as a green/red dot), and update status with both
+  commit ids. VRAM moved out of the per-model compatibility check into the
+  System row's GPU stat tile, alongside a new CPU stat tile (core count +
+  load, via `psutil.cpu_count()`/`cpu_percent()` -- previously absent from
+  the dashboard entirely). The whole page was restyled as a dark,
+  panel-based dashboard in the spirit of Grafana. `/api/check-model`,
+  `/api/local-models`, and `/api/known-models` were folded into one
+  `/api/models` endpoint (HuggingFace Hub lookups for all known + cached
+  repos run in parallel via `ThreadPoolExecutor` rather than one-at-a-time
+  on demand).
 
 ### Notes
 
