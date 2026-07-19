@@ -116,6 +116,52 @@ if ($diskFreeGB -ge $RecommendedDiskFreeGB) {
 }
 
 Write-Host ""
+Write-Host "== Disk space (WSL2) ==" -ForegroundColor Cyan
+# Docker Desktop's WSL2 backend stores images, volumes, and any named-volume
+# model/offload cache inside a WSL distro's virtual disk (ext4.vhdx). That
+# disk's location is independent of the Windows install drive -- users
+# routinely move it (Docker Desktop Settings > Resources > Advanced, or
+# `wsl --manage <Distro> --move`), so C: free space can look fine while the
+# drive that actually fills up is elsewhere. Resolve each distro's real
+# location from the registry and check free space there instead of assuming C:.
+$lxssRoot = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss"
+$wslDrives = @{}
+if (Test-Path $lxssRoot) {
+    Get-ChildItem $lxssRoot -ErrorAction SilentlyContinue | ForEach-Object {
+        $props = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+        $basePath = $props.BasePath
+        if ($basePath) {
+            $cleanPath = $basePath -replace '^\\\\\?\\', ''
+            $drive = ([System.IO.Path]::GetPathRoot($cleanPath) -replace '\\$', '')
+            if ($drive) {
+                $label = if ($props.DistributionName) { $props.DistributionName } else { "(docker-desktop-data)" }
+                if (-not $wslDrives.ContainsKey($drive)) { $wslDrives[$drive] = @() }
+                $wslDrives[$drive] += $label
+            }
+        }
+    }
+}
+if ($wslDrives.Count -eq 0) {
+    Warn "Could not determine WSL2 distro locations (no WSL installed, or registry layout differs) -- verify manually where Docker Desktop's WSL disks live"
+} else {
+    foreach ($drive in $wslDrives.Keys) {
+        $distroList = ($wslDrives[$drive] -join ", ")
+        try {
+            $freeGB = [math]::Round((Get-PSDrive ($drive.TrimEnd(':'))).Free / 1GB, 1)
+            if ($freeGB -ge $RecommendedDiskFreeGB) {
+                Pass "${freeGB}GB free on $drive (hosts: $distroList; recommended: ${RecommendedDiskFreeGB}GB+)"
+            } elseif ($freeGB -ge $MinDiskFreeGB) {
+                Warn "${freeGB}GB free on $drive (hosts: $distroList; minimum: ${MinDiskFreeGB}GB). Docker images, volumes, and any model cache in named volumes live here, not on C:."
+            } else {
+                Fail "${freeGB}GB free on $drive (hosts: $distroList; below minimum: ${MinDiskFreeGB}GB)"
+            }
+        } catch {
+            Warn "Found WSL distro(s) ($distroList) on $drive but could not read free space there"
+        }
+    }
+}
+
+Write-Host ""
 Write-Host "== Summary ==" -ForegroundColor Cyan
 Write-Host "  $passCount passed, $warnCount warning(s), $failCount failure(s)"
 if ($failCount -gt 0) {
