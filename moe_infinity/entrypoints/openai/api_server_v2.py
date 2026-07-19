@@ -142,6 +142,7 @@ _contextpilot_state_lock = Lock()
 _contextpilot_fallback_count: int = 0
 _contextpilot_last_fallback_count: int = 0
 
+logger = logging.getLogger(__name__)
 _cp_logger = logging.getLogger("moe_infinity.contextpilot")
 _cp_middleware: Optional[Any] = None
 _eviction_sync: Optional[Any] = None
@@ -1093,11 +1094,18 @@ async def _initialize_model() -> None:
             )
 
         _ensure_engine_loop_running()
+        _health_state.set_healthy()
+    except Exception as exc:
+        # _model_init_task is fire-and-forget (asyncio.create_task, never
+        # awaited) -- without this, an exception here is silently dropped:
+        # the process keeps running, /health stays stuck on "starting"
+        # forever, and every request gets a 503 indistinguishable from a
+        # genuine hang. Log it and surface it through /health instead.
+        logger.exception("Model initialization failed")
+        _health_state.set_unhealthy(f"{type(exc).__name__}: {exc}")
     finally:
         if _startup_watchdog is not None:
             _startup_watchdog.cancel()
-
-    _health_state.set_healthy()
 
 
 @app.on_event("startup")
@@ -1876,11 +1884,19 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Enable CP debug endpoints (inject-fault)",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="info",
+        choices=["debug", "info", "warning", "error", "critical"],
+        help="Root logging level, also passed to uvicorn (default: info)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    logging.basicConfig(level=args.log_level.upper())
     _max_waiting_requests = max(0, int(args.max_waiting_requests))
     _max_n = max(1, int(args.max_n))
     _configure_auth(
@@ -1898,6 +1914,6 @@ if __name__ == "__main__":
         app,
         host=args.host,
         port=args.port,
-        log_level="info",
+        log_level=args.log_level,
         timeout_keep_alive=TIMEOUT_KEEP_ALIVE,
     )

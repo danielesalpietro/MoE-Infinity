@@ -34,6 +34,7 @@ Key benefits include:
     - [Running Inference](#running-inference)
     - [Benchmarking](#benchmarking)
     - [OpenAI-Compatible Server (Continuous Batching)](#openai-compatible-server-continuous-batching)
+    - [Chat WebUI (Docker)](#chat-webui-docker)
 - [ContextPilot Integration (Optional)](#contextpilot-integration-optional)
 - [Architecture](#architecture)
 - [Release Plan](#release-plan)
@@ -298,6 +299,57 @@ pip install openai
 python tests/python/integration/test_oai_completions.py
 python tests/python/integration/test_oai_chat_completions.py
 ```
+
+### Chat WebUI (Docker)
+
+For interactive use (rather than curl/the `openai` package), [`docker-compose.webui.yml`](docker-compose.webui.yml) starts the OpenAI-compatible server together with [Open WebUI](https://github.com/open-webui/open-webui) as a chat frontend, wired together via `OPENAI_API_BASE_URL`:
+
+```bash
+docker compose -f docker-compose.webui.yml up -d --build
+```
+
+or with the bundled launch scripts, which also accept an optional model override:
+
+```powershell
+.\start-webui.ps1
+.\start-webui.ps1 -Model openai/gpt-oss-20b
+```
+
+```bash
+./start-webui.sh
+./start-webui.sh openai/gpt-oss-20b
+```
+
+Open [http://localhost:3000](http://localhost:3000) — on first launch, Open WebUI asks you to create a local admin account, after which the model configured via `MOE_MODEL` is available in the model picker. The default, `vprovorg/tiny-random-Mixtral-8x7B-v0.1`, is a randomly-initialized tiny Mixtral checkpoint (a few MB, bfloat16) — a fast smoke test that the offload/serve pipeline itself works, not a model worth chatting with. Point it at a real checkpoint once that's verified:
+
+```bash
+MOE_MODEL=openai/gpt-oss-20b docker compose -f docker-compose.webui.yml up -d --build
+```
+
+This requires an NVIDIA GPU with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host. The `moe-infinity` service builds from [`docker/Dockerfile.serve`](docker/Dockerfile.serve), which is dedicated to serving a model (not to running the test suite — see [`docker/Dockerfile`](docker/Dockerfile) for that).
+
+By default this build skips `flash-attn`: it's a pure speed optimization (the server falls back to eager attention automatically when it's absent) but it compiles from source with no prebuilt wheel for this torch/CUDA/Python combination, making it by far the slowest and most RAM/disk-intensive part of the build. If you need maximum throughput and can afford the extra build time, include it with:
+
+```bash
+INSTALL_FLASH_ATTN=true docker compose -f docker-compose.webui.yml up -d --build
+```
+
+Stop the stack:
+
+```bash
+docker compose -f docker-compose.webui.yml down
+```
+
+Configuration can also be kept in a `.env` file instead of env-var prefixes — copy [`.env.example`](.env.example) to `.env` and edit it; `docker compose` (and therefore `start-webui.ps1`/`.sh`) picks it up automatically. This is also where an `HF_TOKEN` goes, for higher HuggingFace Hub rate limits and access to gated repos.
+
+#### Model status page
+
+[http://localhost:8600](http://localhost:8600) is a **read-only** dashboard (`model-status` service) that shows:
+
+- **System**: CPU, RAM, GPU (name + dedicated VRAM via `nvidia-smi`), and disk as stat tiles with usage gauges; live status/CPU/memory of `moe-infinity-server`, `open-webui`, `model-status` and `docker-proxy` under Services; and a log viewer (pick a container, auto-refreshes every 5s) — this is what we used throughout development to see whether the server was genuinely stuck or just slow.
+- **Models**: a single table listing every model from the README's "Supported Models" plus anything already cached locally (add any other HuggingFace repo id via the field above the table). For each: download progress (local size vs. final size, as a segmented meter), the disk space still needed (final size minus what's already downloaded, checked against current free disk space — green/red dot), and whether HuggingFace Hub has a newer commit than what's cached (with both commit ids).
+
+It never downloads anything, restarts `moe-infinity`, or writes anything — it only tells you what to run: `MOE_MODEL=<repo_id> ./start-webui.sh`. Container status/stats/logs come from a `docker-proxy` sidecar ([`tecnativa/docker-socket-proxy`](https://github.com/Tecnativa/docker-socket-proxy)) that only allows read-only `GET` calls against the Docker API (no exec/start/stop/create) — `model-status` never touches the Docker socket directly, and only queries containers belonging to this stack even though the proxy itself can see the whole host.
 
 ## ContextPilot Integration (Optional)
 
