@@ -254,3 +254,8 @@ moe_infinity/_version.py
 
 # Evidence captured by docker/repro_olmoe_123.sh (server logs, responses).
 /.repro-123/
+
+# Session context for Claude Code. Kept local: it documents this specific
+# host (vast.ai tenancy, storage layout, LAN address) and the fork is public.
+# Remove this line to share it with the repo.
+/CLAUDE.md
