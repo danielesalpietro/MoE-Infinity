@@ -9,7 +9,11 @@
 # docker/Dockerfile.benchmark -- neither is referenced here.
 #
 #   docker compose -f docker-compose.webui.yml up -d --build
-#   open http://<host>:3000
+#
+# Three ports, all configurable (defaults shown):
+#   8700  OpenAI-compatible API   /v1/chat/completions, /health
+#   8701  Open WebUI chat
+#   8702  model-status dashboard
 #
 # Requires an NVIDIA GPU plus the NVIDIA Container Toolkit on the host.
 #
@@ -24,6 +28,34 @@
 # was built for gets you a runtime kernel failure, not a slowdown. Prefer
 # GPU-<uuid> over an index -- indices can be reordered by the driver's
 # enumeration mode, UUIDs cannot.
+#
+# ---------------------------------------------------------------------
+# Coexisting with other stacks on a shared host
+# ---------------------------------------------------------------------
+# This stack is built to be a well-behaved tenant on a host that already
+# runs other work:
+#
+#   - Every host port is a variable (MOE_API_PORT / MOE_WEBUI_PORT /
+#     MOE_STATUS_PORT). The obvious defaults -- 3000, 8000, 8600 -- are
+#     deliberately NOT used: those are the defaults of Open WebUI, plain
+#     HTTP frontends and assorted dashboards, so they are exactly the ports
+#     another stack on the same host is likely to have claimed. A container
+#     that is merely stopped still owns its binding as soon as someone
+#     brings it back up, so "the port is free right now" is not enough.
+#
+#   - No named volumes. Everything is a bind mount under MOE_DATA_ROOT, so
+#     this stack contributes nothing to `docker volume ls` and cannot be
+#     caught by a stray `docker volume prune`.
+#
+#   - Every container name is prefixed moe-infinity-, and the compose
+#     project name is pinned below, so `docker compose down` here can never
+#     reach another project's containers.
+#
+# NEVER clean up disk on a shared host with `docker system prune -a` or
+# `docker volume prune`: both are host-wide and will delete other projects'
+# images and volumes, not just this stack's. To reclaim only what this
+# stack allocated: `docker compose -f docker-compose.webui.yml down --rmi
+# local` plus deleting MOE_DATA_ROOT by hand.
 #
 # ---------------------------------------------------------------------
 # Storage
@@ -44,6 +76,8 @@
 # kernel hard-requires BF16 and rejects fp16/fp32 checkpoints with
 # "fused_moe_ffn_into: BF16 only". Point MOE_MODEL at a real checkpoint
 # once that smoke test passes.
+
+name: moe-infinity
 
 services:
   moe-infinity:
@@ -80,7 +114,7 @@ services:
     ulimits:
       memlock: -1
     ports:
-      - "${MOE_BIND_ADDR:-127.0.0.1}:8000:8000"
+      - "${MOE_BIND_ADDR:-127.0.0.1}:${MOE_API_PORT:-8700}:8000"
     volumes:
       - ${MOE_DATA_ROOT:-./.data}/offload:/offload
       - ${MOE_DATA_ROOT:-./.data}/hf-cache:/root/.cache/huggingface
@@ -106,7 +140,7 @@ services:
       # only a stand-in, never a secret.
       OPENAI_API_KEY: ${MOE_API_KEYS:-moe-infinity-local}
     ports:
-      - "${MOE_BIND_ADDR:-127.0.0.1}:3000:8080"
+      - "${MOE_BIND_ADDR:-127.0.0.1}:${MOE_WEBUI_PORT:-8701}:8080"
     volumes:
       - ${MOE_DATA_ROOT:-./.data}/open-webui:/app/backend/data
     depends_on:
@@ -132,7 +166,7 @@ services:
       OFFLOAD_DIR: /mnt/offload
       OPEN_WEBUI_DATA_DIR: /mnt/open_webui_data
     ports:
-      - "${MOE_BIND_ADDR:-127.0.0.1}:8600:8600"
+      - "${MOE_BIND_ADDR:-127.0.0.1}:${MOE_STATUS_PORT:-8702}:8600"
     volumes:
       - ${MOE_DATA_ROOT:-./.data}/hf-cache:/root/.cache/huggingface:ro
       - ${MOE_DATA_ROOT:-./.data}/offload:/mnt/offload:ro
