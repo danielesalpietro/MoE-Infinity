@@ -47,9 +47,21 @@ CONSTANTS_PATH="/workspace/MoE-Infinity/moe_infinity/common/constants.py"
 
 mkdir -p "$EVIDENCE_DIR"
 
-api_port() {
-  # Ask docker where the API actually landed rather than assuming a port.
-  docker port "$CONTAINER" 8000/tcp 2>/dev/null | head -1 | sed 's/.*://'
+api_addr() {
+  # Ask docker where the API actually landed, address included.
+  #
+  # Taking only the port and assuming 127.0.0.1 is wrong whenever the stack
+  # publishes on a specific interface: this stack binds the host's LAN address,
+  # so every probe failed with "Failed to connect to 127.0.0.1" and told us
+  # nothing about the server. A probe that cannot reach the server is not
+  # evidence either way.
+  local mapping
+  mapping="$(docker port "$CONTAINER" 8000/tcp 2>/dev/null | head -1)"
+  [ -n "$mapping" ] || return 1
+  case "$mapping" in
+    0.0.0.0:*|"[::]:"*) echo "127.0.0.1:${mapping##*:}" ;;
+    *) echo "$mapping" ;;
+  esac
 }
 
 expert_type_in_container() {
@@ -58,17 +70,30 @@ expert_type_in_container() {
 }
 
 wait_ready() {
-  local port deadline
-  port="$(api_port)"
+  local addr deadline body
+  addr="$(api_addr)" || { echo "cannot determine the published address" >&2; return 1; }
   deadline=$(( $(date +%s) + READY_TIMEOUT ))
-  echo "waiting for the server on :${port} (up to ${READY_TIMEOUT}s)..."
+  echo "waiting for the server on ${addr} (up to ${READY_TIMEOUT}s)..."
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
-      echo "server healthy"
-      return 0
-    fi
-    # A container that has died is not going to become healthy; fail fast so
-    # a crash during *load* is not misread as a slow load.
+    # No -f: a 503 still carries a body, and the body is the whole point.
+    body="$(curl -sS --max-time 5 "http://${addr}/health" 2>/dev/null || true)"
+
+    case "$body" in
+      *'"status":"healthy"'*)
+        echo "server healthy"
+        return 0 ;;
+      *'engine loop failed'*)
+        # A failed engine loop never recovers -- /health keeps answering, just
+        # with a reason. Treating that as "still loading" burns the whole
+        # timeout on a question that is already settled, which is exactly what
+        # the first run did: 15 minutes waiting for a server that was dead.
+        echo "the engine loop has failed -- not waiting further:"
+        printf '  %s\n' "$body"
+        return 1 ;;
+    esac
+
+    # A container that has died is not going to become healthy either; fail
+    # fast so a crash during *load* is not misread as a slow load.
     if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" != "true" ]; then
       echo "container is no longer running" >&2
       return 1
@@ -82,9 +107,9 @@ wait_ready() {
 probe() {
   # One short, deterministic completion. Greedy and capped: we are asking
   # whether the expert forward runs at all, not measuring quality.
-  local port
-  port="$(api_port)"
-  curl -fsS --max-time 120 "http://127.0.0.1:${port}/v1/chat/completions" \
+  local addr
+  addr="$(api_addr)"
+  curl -fsS --max-time 120 "http://${addr}/v1/chat/completions" \
     -H 'Content-Type: application/json' \
     -d "{
           \"model\": \"${MODEL}\",
