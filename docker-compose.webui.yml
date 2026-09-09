@@ -188,5 +188,11 @@ services:
       INFO: 1
       POST: 0
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # MOE_DOCKER_SOCK must point at the daemon this stack actually runs on.
+      # The system socket is the right default on a single-daemon host and the
+      # wrong one wherever the stack runs on a second daemon: the dashboard
+      # then queries a daemon holding none of these containers and shows an
+      # empty list, without failing or explaining itself. Set it in .env
+      # alongside DOCKER_HOST.
+      - ${MOE_DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock:ro
     # No published ports: reachable only from this compose network.
