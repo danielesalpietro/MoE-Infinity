@@ -1,0 +1,129 @@
+# MoE-Infinity Serving Dockerfile
+#
+# Builds MoE-Infinity (CUDA extensions included) and starts the
+# OpenAI-compatible continuous-batching server (api_server_v2) so it can be
+# queried directly, or through a chat WebUI (see docker-compose.webui.yml).
+#
+# This image is for interacting with a model, not for running the test
+# suite -- see docker/Dockerfile for the build & test image.
+#
+# flash-attn is skipped by default: it is a purely optional acceleration
+# (moe_infinity/runtime/model_offload.py falls back to eager attention when
+# unavailable) but it's built from source with no prebuilt wheel available
+# for this torch/CUDA/Python combination -- by far the slowest and most
+# RAM-hungry step of the build. Pass --build-arg INSTALL_FLASH_ATTN=true to
+# include it (e.g. for a throughput benchmark rather than interactive chat).
+#
+# Usage:
+#   docker build -t moe-infinity-serve -f docker/Dockerfile.serve .
+#   docker run --gpus all -p 8000:8000 \
+#     -e MOE_MODEL=deepseek-ai/DeepSeek-V2-Lite-Chat \
+#     -v moe_offload:/offload \
+#     moe-infinity-serve
+
+FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
+
+LABEL maintainer="EfficientMoE Team"
+LABEL description="MoE-Infinity OpenAI-compatible serving image"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ccache \
+    cmake \
+    ninja-build \
+    git \
+    uuid-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CCACHE_DIR=/ccache
+ENV CCACHE_MAXSIZE=10G
+ENV PATH=/usr/lib/ccache:${PATH}
+RUN mkdir -p ${CCACHE_DIR}
+
+# ---------------------------------------------------------------
+# Install CUTLASS (default to a 3.x release; override with build args)
+# ---------------------------------------------------------------
+ARG CUTLASS_REPO=https://github.com/NVIDIA/cutlass.git
+ARG CUTLASS_VERSION=v3.9.2
+ARG CUTLASS_NVCC_ARCHS=86
+ENV CUTLASS_DIR=/root/cutlass
+
+RUN git clone --branch ${CUTLASS_VERSION} --depth 1 ${CUTLASS_REPO} ${CUTLASS_DIR}
+RUN --mount=type=cache,target=/ccache \
+    cmake -B ${CUTLASS_DIR}/build -S ${CUTLASS_DIR} \
+    -DCUTLASS_ENABLE_LIBRARY=ON \
+    -DCUTLASS_NVCC_ARCHS=${CUTLASS_NVCC_ARCHS} \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    && cmake --build ${CUTLASS_DIR}/build --target cutlass_library -j$(nproc)
+
+RUN git clone --branch v3.2.2 --depth 1 https://github.com/NVIDIA/NVTX.git /tmp/nvtx \
+    && cp -a /tmp/nvtx/c/include/nvtx3/. /usr/local/cuda/include/nvtx3/ \
+    && rm -rf /tmp/nvtx \
+    && test -f /usr/local/cuda/include/nvtx3/nvtx3.hpp
+
+WORKDIR /workspace/MoE-Infinity
+
+ARG INSTALL_FLASH_ATTN=false
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir \
+    setuptools>=75 \
+    wheel \
+    ninja \
+    py-cpuinfo
+
+RUN if [ "$INSTALL_FLASH_ATTN" = "true" ]; then \
+        pip install --no-cache-dir -r requirements.txt; \
+    else \
+        grep -v '^flash-attn' requirements.txt > requirements.no-flash-attn.txt \
+        && pip install --no-cache-dir -r requirements.no-flash-attn.txt; \
+    fi
+
+COPY . .
+
+# setup.py's install_requires is built from requirements.txt at build time
+# (fetch_requirements("requirements.txt")), and COPY . . just overwrote the
+# filtered copy above with the original file -- strip flash-attn from it
+# again here, or the editable install below re-resolves and rebuilds it
+# from source regardless of the filtered install that already ran.
+RUN if [ "$INSTALL_FLASH_ATTN" != "true" ]; then \
+        grep -v '^flash-attn' requirements.txt > requirements.txt.tmp \
+        && mv requirements.txt.tmp requirements.txt; \
+    fi
+
+RUN --mount=type=cache,target=/ccache \
+    CUTLASS_DIR=${CUTLASS_DIR} pip install --no-cache-dir --no-build-isolation -e .
+
+RUN ls -lh moe_infinity/*.so && python -c "import moe_infinity; print('OK')"
+
+# ---------------------------------------------------------------
+# Runtime configuration (all overridable at `docker run` / compose time)
+# ---------------------------------------------------------------
+ENV MOE_MODEL=deepseek-ai/DeepSeek-V2-Lite-Chat
+ENV MOE_OFFLOAD_DIR=/offload
+ENV MOE_HOST=0.0.0.0
+ENV MOE_PORT=8000
+ENV MOE_DEVICE_MEMORY_RATIO=0.5
+ENV MOE_KV_CACHE_RATIO=0.15
+ENV MOE_MAX_BATCH_SIZE=8
+
+RUN mkdir -p ${MOE_OFFLOAD_DIR}
+VOLUME ["/offload"]
+
+EXPOSE 8000
+
+# sitecustomize is auto-imported by CPython at startup when it is importable;
+# putting it on a dedicated PYTHONPATH entry (rather than in site-packages)
+# keeps it out of the editable install and makes it obvious where it comes
+# from. It only acts when MOE_LOG_LEVEL is set -- see docker/sitecustomize.py.
+COPY docker/sitecustomize.py /opt/moe-bootstrap/sitecustomize.py
+ENV PYTHONPATH=/opt/moe-bootstrap:${PYTHONPATH}
+
+COPY docker/serve_entrypoint.sh /usr/local/bin/serve_entrypoint.sh
+RUN chmod +x /usr/local/bin/serve_entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/serve_entrypoint.sh"]

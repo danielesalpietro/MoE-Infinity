@@ -1,0 +1,7 @@
+# Shell scripts and Dockerfiles are executed inside Linux containers. A CRLF
+# checkout on a Windows working copy would make the shebang line resolve to
+# "/usr/bin/env bash\r" and fail with an unhelpful "no such file or
+# directory", so pin them to LF regardless of core.autocrlf.
+*.sh text eol=lf
+Dockerfile* text eol=lf
+docker-compose*.yml text eol=lf

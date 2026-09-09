@@ -1,0 +1,158 @@
+# Serve a MoE-Infinity model through an OpenAI-compatible API plus a chat
+# WebUI (Open WebUI, https://github.com/open-webui/open-webui) and a
+# read-only resource dashboard.
+#
+# This stack is for *interacting* with a model. It deliberately runs no
+# tests and no benchmarks: the serving image (docker/Dockerfile.serve) has
+# no test stages and its entrypoint starts the server directly. The build
+# and test image is docker/Dockerfile, the benchmark image is
+# docker/Dockerfile.benchmark -- neither is referenced here.
+#
+#   docker compose -f docker-compose.webui.yml up -d --build
+#   open http://<host>:3000
+#
+# Requires an NVIDIA GPU plus the NVIDIA Container Toolkit on the host.
+#
+# ---------------------------------------------------------------------
+# GPU selection matters on mixed-architecture hosts
+# ---------------------------------------------------------------------
+# MOE_GPU_DEVICE_IDS pins which GPUs the container sees (indices as
+# reported by nvidia-smi, GPU-<uuid> strings, or "all"). This is not a
+# tuning knob: the fused MoE CUDA kernels are compiled for the single
+# CUTLASS architecture named by CUTLASS_NVCC_ARCHS at build time, so
+# exposing a GPU of a different compute capability than the one the image
+# was built for gets you a runtime kernel failure, not a slowdown. Prefer
+# GPU-<uuid> over an index -- indices can be reordered by the driver's
+# enumeration mode, UUIDs cannot.
+#
+# ---------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------
+# MOE_DATA_ROOT is the host directory holding the three growing datasets:
+# the HuggingFace cache (model downloads), the offload directory (where
+# MoE-Infinity spills experts), and Open WebUI's chat database. Bind mounts
+# rather than named volumes so the offload directory can be placed on the
+# fastest device available -- on a host with persistent memory, pointing
+# MOE_DATA_ROOT at the PMEM filesystem is the whole point of the exercise.
+#
+# ---------------------------------------------------------------------
+# Model default
+# ---------------------------------------------------------------------
+# Defaults to vprovorg/tiny-random-Mixtral-8x7B-v0.1: a tiny randomly
+# initialized Mixtral checkpoint (a few MB, bfloat16) that exercises the
+# whole offload/serve path in seconds. It must be bfloat16 -- the fused MoE
+# kernel hard-requires BF16 and rejects fp16/fp32 checkpoints with
+# "fused_moe_ffn_into: BF16 only". Point MOE_MODEL at a real checkpoint
+# once that smoke test passes.
+
+services:
+  moe-infinity:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.serve
+      args:
+        INSTALL_FLASH_ATTN: ${INSTALL_FLASH_ATTN:-false}
+        CUTLASS_VERSION: ${CUTLASS_VERSION:-v3.9.2}
+        CUTLASS_NVCC_ARCHS: ${CUTLASS_NVCC_ARCHS:-86}
+    image: moe-infinity-serve:${MOE_IMAGE_TAG:-sm${CUTLASS_NVCC_ARCHS:-86}}
+    container_name: moe-infinity-server
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${MOE_GPU_DEVICE_IDS:-0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      MOE_MODEL: ${MOE_MODEL:-vprovorg/tiny-random-Mixtral-8x7B-v0.1}
+      MOE_OFFLOAD_DIR: /offload
+      MOE_DEVICE_MEMORY_RATIO: ${MOE_DEVICE_MEMORY_RATIO:-0.5}
+      MOE_KV_CACHE_RATIO: ${MOE_KV_CACHE_RATIO:-0.15}
+      MOE_MAX_BATCH_SIZE: ${MOE_MAX_BATCH_SIZE:-8}
+      MOE_EXTRA_ARGS: ${MOE_EXTRA_ARGS:-}
+      MOE_API_KEYS: ${MOE_API_KEYS:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /root/.cache/huggingface
+      MOE_LOG_LEVEL: ${MOE_LOG_LEVEL:-}
+    cap_add:
+      # py-spy dump --pid 1, for telling a stuck load apart from a slow one.
+      - SYS_PTRACE
+    # Expert offloading pins large host buffers; the default 64MB memlock
+    # ceiling and 64MB /dev/shm are both too small for a real checkpoint.
+    ipc: host
+    ulimits:
+      memlock: -1
+    ports:
+      - "${MOE_BIND_ADDR:-127.0.0.1}:8000:8000"
+    volumes:
+      - ${MOE_DATA_ROOT:-./.data}/offload:/offload
+      - ${MOE_DATA_ROOT:-./.data}/hf-cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      # A cold start downloads the checkpoint and builds the offload index;
+      # on a multi-GB model that is minutes, not seconds.
+      start_period: ${MOE_HEALTH_START_PERIOD:-600s}
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:${OPEN_WEBUI_TAG:-main}
+    container_name: moe-infinity-open-webui
+    restart: unless-stopped
+    environment:
+      WEBUI_NAME: MoE-Infinity Chat
+      ENABLE_OLLAMA_API: "false"
+      OPENAI_API_BASE_URL: http://moe-infinity:8000/v1
+      # Open WebUI always sends an Authorization header; when the server has
+      # no --api-key configured it ignores the value, so this placeholder is
+      # only a stand-in, never a secret.
+      OPENAI_API_KEY: ${MOE_API_KEYS:-moe-infinity-local}
+    ports:
+      - "${MOE_BIND_ADDR:-127.0.0.1}:3000:8080"
+    volumes:
+      - ${MOE_DATA_ROOT:-./.data}/open-webui:/app/backend/data
+    depends_on:
+      - moe-infinity
+
+  model-status:
+    build:
+      context: model-status
+    image: moe-infinity-model-status:latest
+    container_name: moe-infinity-model-status
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${MOE_GPU_DEVICE_IDS:-0}
+      NVIDIA_DRIVER_CAPABILITIES: utility
+      HF_TOKEN: ${HF_TOKEN:-}
+      HOST_RAM_TOTAL_GB: ${HOST_RAM_TOTAL_GB:-}
+      # Windows-only gauge (pinned system RAM mapped for the GPU). It has no
+      # Linux equivalent, so these stay empty here and the gauge is skipped.
+      HOST_GPU_SHARED_USED_GB: ${HOST_GPU_SHARED_USED_GB:-}
+      HOST_GPU_SHARED_TOTAL_GB: ${HOST_GPU_SHARED_TOTAL_GB:-}
+      DOCKER_PROXY_URL: http://docker-proxy:2375
+      OFFLOAD_DIR: /mnt/offload
+      OPEN_WEBUI_DATA_DIR: /mnt/open_webui_data
+    ports:
+      - "${MOE_BIND_ADDR:-127.0.0.1}:8600:8600"
+    volumes:
+      - ${MOE_DATA_ROOT:-./.data}/hf-cache:/root/.cache/huggingface:ro
+      - ${MOE_DATA_ROOT:-./.data}/offload:/mnt/offload:ro
+      - ${MOE_DATA_ROOT:-./.data}/open-webui:/mnt/open_webui_data:ro
+    depends_on:
+      - docker-proxy
+
+  docker-proxy:
+    # Gives model-status read-only container status/stats/logs without
+    # handing it the raw Docker socket (which is equivalent to host root).
+    # Only GET on containers/info is enabled; POST -- start, stop, exec,
+    # create -- stays off. model-status additionally restricts which
+    # container names it will query (DASHBOARD_CONTAINERS in app.py).
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: moe-infinity-docker-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # No published ports: reachable only from this compose network.

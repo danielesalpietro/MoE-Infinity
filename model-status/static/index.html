@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MoE-Infinity Model Status</title>
+<style>
+  :root {
+    --surface-page:    #f9f9f7;
+    --surface-panel:   #fcfcfb;
+    --text-primary:    #0b0b0b;
+    --text-secondary:  #52514e;
+    --text-muted:      #898781;
+    --border:          rgba(11,11,11,0.10);
+    --gridline:         #e1e0d9;
+    --series-blue:      #2a78d6;
+    --status-good:      #0ca30c;
+    --status-warning:   #fab219;
+    --status-serious:   #ec835a;
+    --status-critical:  #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface-page:   #0d0d0d;
+      --surface-panel:  #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --border:         rgba(255,255,255,0.10);
+      --gridline:        #2c2c2a;
+      --series-blue:     #3987e5;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: 0 1.5rem 3rem;
+    background: var(--surface-page); color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap { max-width: 1280px; margin-inline: auto; }
+
+  .topbar {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 1.1rem 0 0.9rem; border-bottom: 1px solid var(--border); margin-bottom: 1.3rem;
+    flex-wrap: wrap; gap: 0.4rem;
+  }
+  .topbar h1 { font-size: 1.15rem; margin: 0; letter-spacing: 0.01em; }
+  .topbar .sub { font-size: 0.78rem; color: var(--text-muted); margin: 0; }
+  .topbar .meta { font-size: 0.75rem; color: var(--text-muted); }
+
+  .panel-title {
+    font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); margin: 2rem 0 0.6rem;
+  }
+  .panel {
+    background: var(--surface-panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem 1.1rem;
+  }
+
+  /* --- stat tiles (system row) --- */
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.9rem; }
+  .stat-tile {
+    background: var(--surface-panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.85rem 1rem; display: flex; align-items: center; gap: 0.9rem;
+    border-left: 3px solid var(--gridline); position: relative; overflow: hidden;
+  }
+  .stat-tile .stat-body { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+  .stat-tile .stat-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+  .stat-tile .stat-value {
+    font-size: 1.3rem; font-weight: 600; line-height: 1.15;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 15ch;
+  }
+  .stat-tile .stat-value.text { font-size: 0.95rem; }
+  .stat-tile .stat-sub { font-size: 0.74rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gauge-svg { flex-shrink: 0; }
+  .gauge-svg text { font-family: inherit; font-weight: 700; }
+
+  /* --- segmented progress meter --- */
+  .segbar { display: flex; gap: 2px; }
+  .segbar .seg { width: 9px; height: 13px; border-radius: 2px; background: var(--gridline); }
+  .segbar .seg.filled { background: var(--series-blue); }
+  .meter-cell { display: flex; align-items: center; gap: 0.5rem; }
+  .meter-pct { font-size: 0.78rem; color: var(--text-secondary); min-width: 2.6em; }
+
+  /* --- tables --- */
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--gridline); font-size: 0.85rem; }
+  th { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+  tbody tr:hover { background: color-mix(in srgb, var(--series-blue) 6%, transparent); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; }
+  .model-name { font-weight: 600; }
+  .model-tags { display: flex; gap: 0.35rem; margin-top: 0.15rem; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.1rem 0.5rem; border-radius: 999px;
+    font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+  }
+  .badge.good     { background: color-mix(in srgb, var(--status-good) 16%, transparent); color: var(--status-good); }
+  .badge.warning  { background: color-mix(in srgb, var(--status-warning) 20%, transparent); color: #8a5c00; }
+  @media (prefers-color-scheme: dark) { .badge.warning { color: var(--status-warning); } }
+  .badge.critical { background: color-mix(in srgb, var(--status-critical) 16%, transparent); color: var(--status-critical); }
+  .badge.neutral  { background: color-mix(in srgb, var(--text-muted) 20%, transparent); color: var(--text-secondary); }
+
+  .dot { display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%; flex-shrink: 0; }
+  .dot.good { background: var(--status-good); }
+  .dot.critical { background: var(--status-critical); }
+  .dot.neutral { background: var(--text-muted); }
+  .space-cell { display: flex; align-items: center; gap: 0.4rem; }
+
+  .status-dot { display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%; margin-right: 0.4rem; vertical-align: middle; }
+  .status-dot.running { background: var(--status-good); }
+  .status-dot.unhealthy { background: var(--status-critical); }
+  .status-dot.stopped { background: var(--text-muted); }
+
+  .toolbar { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.85rem; }
+  .toolbar-title { display: flex; align-items: baseline; justify-content: space-between; }
+  input[type=text] {
+    padding: 0.4rem 0.65rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.85rem;
+    background: var(--surface-page); color: inherit; min-width: 260px;
+  }
+  select {
+    padding: 0.35rem 0.6rem; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface-page); color: inherit; font-size: 0.82rem;
+  }
+  button {
+    padding: 0.4rem 0.9rem; border-radius: 6px; border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--series-blue) 14%, transparent); color: inherit; cursor: pointer; font-size: 0.85rem;
+  }
+  button:hover { background: color-mix(in srgb, var(--series-blue) 24%, transparent); }
+  label { font-size: 0.78rem; color: var(--text-secondary); }
+
+  .empty { color: var(--text-muted); font-size: 0.85rem; padding: 0.5rem 0; }
+  .err { color: var(--status-critical); font-size: 0.85rem; padding: 0.5rem 0; }
+
+  #log-view {
+    margin-top: 0; background: #0d1117; color: #c9d1d9; border-radius: 6px; padding: 0.9rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.75rem;
+    max-height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div>
+      <h1>MoE-Infinity &middot; Status</h1>
+      <p class="sub">Read-only dashboard for the WebUI stack &mdash; never downloads a model, restarts a container, or writes anything. Use <code>start-webui.ps1</code> / <code>start-webui.sh</code> for that.</p>
+    </div>
+    <div class="meta" id="dashboard-updated"></div>
+  </div>
+
+  <div class="panel-title">System</div>
+  <div class="stat-row" id="stat-row">
+    <div class="empty">Loading system stats...</div>
+  </div>
+
+  <div class="panel-title">Services</div>
+  <div class="panel">
+    <table id="containers-table" style="display:none">
+      <thead><tr><th>Container</th><th>Status</th><th>CPU</th><th>Memory</th></tr></thead>
+      <tbody id="containers-tbody"></tbody>
+    </table>
+    <div id="containers-empty" class="empty" style="display:none">Container status unavailable (docker-proxy not reachable).</div>
+  </div>
+
+  <div class="panel-title">Models</div>
+  <div class="panel">
+    <div class="toolbar">
+      <input type="text" id="repo-input" placeholder="Add a repo_id, e.g. Qwen/Qwen3-30B-A3B" autocomplete="off">
+      <button id="add-model-btn" type="button">Add</button>
+      <span class="empty" id="models-updated" style="padding:0"></span>
+    </div>
+    <table id="models-table" style="display:none">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Downloaded</th>
+          <th>Local</th>
+          <th>Final</th>
+          <th>Space needed</th>
+          <th>Updated</th>
+          <th>Commit</th>
+        </tr>
+      </thead>
+      <tbody id="models-tbody"></tbody>
+    </table>
+    <div id="models-empty" class="empty" style="display:none">No models known or cached yet.</div>
+  </div>
+
+  <div class="panel-title">Logs</div>
+  <div class="panel">
+    <div class="toolbar">
+      <label for="log-select">Container:</label>
+      <select id="log-select">
+        <option value="moe-infinity-server" selected>moe-infinity-server</option>
+        <option value="moe-infinity-open-webui">moe-infinity-open-webui</option>
+        <option value="moe-infinity-model-status">moe-infinity-model-status</option>
+        <option value="moe-infinity-docker-proxy">moe-infinity-docker-proxy</option>
+      </select>
+      <label for="log-tail">Lines:</label>
+      <select id="log-tail">
+        <option value="100">100</option>
+        <option value="200" selected>200</option>
+        <option value="500">500</option>
+      </select>
+      <label><input type="checkbox" id="log-auto" checked style="width:auto"> auto-refresh (5s)</label>
+    </div>
+    <pre id="log-view">Loading...</pre>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function fmtGB(gb) {
+  if (gb === null || gb === undefined) return "&mdash;";
+  return `${gb} GB`;
+}
+
+function badge(level, text) {
+  return `<span class="badge ${level}">${text}</span>`;
+}
+
+function statusColor(pct) {
+  if (pct === null || pct === undefined) return "var(--text-muted)";
+  if (pct >= 90) return "var(--status-critical)";
+  if (pct >= 75) return "var(--status-warning)";
+  return "var(--series-blue)";
+}
+
+// Donut gauge as inline SVG. pct: 0-100 or null (unknown -> gray, "?").
+function gaugeSvg(pct, size) {
+  size = size || 62;
+  const r = 24, stroke = 7, c = 2 * Math.PI * r, cx = size / 2, cy = size / 2;
+  const clamped = pct === null || pct === undefined ? 0 : Math.max(0, Math.min(100, pct));
+  const offset = c - (clamped / 100) * c;
+  const color = statusColor(pct);
+  const label = pct === null || pct === undefined ? "?" : `${Math.round(pct)}%`;
+  return `
+    <svg class="gauge-svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="currentColor" stroke-opacity="0.15" stroke-width="${stroke}"/>
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${stroke}"
+        stroke-dasharray="${c}" stroke-dashoffset="${offset}" stroke-linecap="round"
+        transform="rotate(-90 ${cx} ${cy})"/>
+      <text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="13" fill="currentColor">${label}</text>
+    </svg>`;
+}
+
+function statTile(label, pct, value, sub, isText) {
+  const accent = statusColor(pct);
+  return `<div class="stat-tile" style="border-left-color:${accent}">
+    ${gaugeSvg(pct)}
+    <div class="stat-body">
+      <div class="stat-label">${label}</div>
+      <div class="stat-value${isText ? " text" : ""}" title="${value}">${value}</div>
+      <div class="stat-sub">${sub || ""}</div>
+    </div>
+  </div>`;
+}
+
+async function loadSystemStats() {
+  try {
+    const res = await fetch("/api/dashboard/resources");
+    const r = await res.json();
+    const tiles = [];
+
+    if (r.cpu) {
+      tiles.push(statTile("CPU", r.cpu.used_pct, `${r.cpu.used_pct}%`, `${r.cpu.count} logical cores`));
+    }
+
+    const ram = r.host_ram || r.docker_ram;
+    if (ram) {
+      const pct = r.host_ram ? r.host_ram.docker_used_pct : r.docker_ram.used_pct;
+      const usedGb = r.host_ram ? r.host_ram.docker_used_gb : r.docker_ram.used_gb;
+      tiles.push(statTile("RAM", pct, fmtGB(ram.total_gb), `${fmtGB(usedGb)} used`));
+    }
+
+    tiles.push(statTile(
+      "GPU",
+      r.gpu_dedicated ? r.gpu_dedicated.used_pct : null,
+      r.gpu_name || "not detected",
+      r.gpu_dedicated ? `${fmtGB(r.gpu_dedicated.used_gb)} / ${fmtGB(r.gpu_dedicated.total_gb)} VRAM` : "",
+      true
+    ));
+
+    if (r.disk_system) {
+      tiles.push(statTile("Storage", r.disk_system.used_pct, fmtGB(r.disk_system.total_gb),
+        `${fmtGB(r.disk_system.free_gb)} free`));
+    }
+
+    $("stat-row").innerHTML = tiles.join("");
+    $("dashboard-updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    $("stat-row").innerHTML = `<p class="err">Failed to load system stats: ${e}</p>`;
+  }
+}
+
+async function loadContainers() {
+  try {
+    const res = await fetch("/api/dashboard/containers");
+    const r = await res.json();
+    if (!r.available) {
+      $("containers-table").style.display = "none";
+      $("containers-empty").style.display = "block";
+      return;
+    }
+    $("containers-table").style.display = "table";
+    $("containers-empty").style.display = "none";
+    const tbody = $("containers-tbody");
+    tbody.innerHTML = "";
+    for (const c of r.containers) {
+      const dotClass = c.state === "running"
+        ? (c.mem_pct !== null && c.mem_pct >= 95 ? "unhealthy" : "running")
+        : "stopped";
+      tbody.innerHTML += `<tr>
+        <td><span class="status-dot ${dotClass}"></span>${c.name}</td>
+        <td>${c.status ?? "unknown"}</td>
+        <td>${c.cpu_pct !== null && c.cpu_pct !== undefined ? c.cpu_pct + "%" : "-"}</td>
+        <td>${c.mem_used_gb !== null && c.mem_used_gb !== undefined ? fmtGB(c.mem_used_gb) + (c.mem_pct !== null ? ` (${c.mem_pct}%)` : "") : "-"}</td>
+      </tr>`;
+    }
+  } catch (e) {
+    $("containers-empty").textContent = `Failed to load container status: ${e}`;
+    $("containers-empty").style.display = "block";
+    $("containers-table").style.display = "none";
+  }
+}
+
+async function loadLogs() {
+  const container = $("log-select").value;
+  const tail = $("log-tail").value;
+  try {
+    const res = await fetch(`/api/dashboard/logs?container=${encodeURIComponent(container)}&tail=${tail}`);
+    const text = await res.text();
+    const view = $("log-view");
+    const wasAtBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 20;
+    view.textContent = text;
+    if (wasAtBottom) view.scrollTop = view.scrollHeight;
+  } catch (e) {
+    $("log-view").textContent = `Failed to load logs: ${e}`;
+  }
+}
+
+let logInterval = null;
+function scheduleLogRefresh() {
+  if (logInterval) clearInterval(logInterval);
+  if ($("log-auto").checked) {
+    logInterval = setInterval(loadLogs, 5000);
+  }
+}
+$("log-select").addEventListener("change", loadLogs);
+$("log-tail").addEventListener("change", loadLogs);
+$("log-auto").addEventListener("change", scheduleLogRefresh);
+
+// --- Models panel ---
+const EXTRA_MODELS_KEY = "moe-infinity-extra-models";
+function getExtraModels() {
+  try { return JSON.parse(sessionStorage.getItem(EXTRA_MODELS_KEY) || "[]"); }
+  catch { return []; }
+}
+function addExtraModel(repoId) {
+  const list = getExtraModels();
+  if (!list.includes(repoId)) {
+    list.push(repoId);
+    sessionStorage.setItem(EXTRA_MODELS_KEY, JSON.stringify(list));
+  }
+}
+
+function segmentBar(pct) {
+  const filled = pct === null || pct === undefined ? 0 : Math.round((pct / 100) * 8);
+  let segs = "";
+  for (let i = 0; i < 8; i++) {
+    segs += `<span class="seg${i < filled ? " filled" : ""}"></span>`;
+  }
+  return `<div class="segbar">${segs}</div>`;
+}
+
+function commitCell(m) {
+  if (!m.local_commit) return `<span class="empty" style="padding:0">&mdash;</span>`;
+  return `<span class="mono">${m.local_commit.slice(0, 8)}</span>`;
+}
+
+function updatedCell(m) {
+  if (m.lookup_error) return badge("neutral", "lookup failed");
+  if (!m.local_commit) return badge("neutral", "not downloaded");
+  if (m.update_available === true) return badge("warning", "update available");
+  if (m.update_available === false) return badge("good", "up to date");
+  return badge("neutral", "unknown");
+}
+
+function renderModelsTable(models) {
+  const tbody = $("models-tbody");
+  tbody.innerHTML = "";
+  if (!models.length) {
+    $("models-table").style.display = "none";
+    $("models-empty").style.display = "block";
+    return;
+  }
+  $("models-table").style.display = "table";
+  $("models-empty").style.display = "none";
+
+  for (const m of models) {
+    const tags = [];
+    if (m.gated) tags.push(badge("warning", "gated"));
+    if (m.downloaded && !m.complete) tags.push(badge("warning", "incomplete"));
+
+    const localCell = `<div class="meter-cell">${segmentBar(m.pct_downloaded)}
+      <span class="meter-pct">${m.pct_downloaded !== null ? m.pct_downloaded + "%" : "&mdash;"}</span></div>
+      <div class="stat-sub">${fmtGB(m.local_size_gb)}</div>`;
+
+    const finalCell = m.lookup_error
+      ? `<span class="err" style="padding:0">unavailable</span>`
+      : fmtGB(m.remote_size_gb);
+
+    let spaceCell = "&mdash;";
+    if (m.delta_gb !== null && m.delta_gb !== undefined) {
+      if (m.disk_ok === null || m.disk_ok === undefined) {
+        spaceCell = `<div class="space-cell"><span class="dot neutral"></span>${fmtGB(m.delta_gb)}</div>`;
+      } else {
+        const dotClass = m.disk_ok ? "good" : "critical";
+        spaceCell = `<div class="space-cell"><span class="dot ${dotClass}"></span>${fmtGB(m.delta_gb)}</div>`;
+      }
+    }
+
+    tbody.innerHTML += `<tr>
+      <td>
+        <div class="model-name">${m.repo_id}</div>
+        ${tags.length ? `<div class="model-tags">${tags.join("")}</div>` : ""}
+      </td>
+      <td>${localCell}</td>
+      <td>${finalCell}</td>
+      <td>${spaceCell}</td>
+      <td>${updatedCell(m)}</td>
+      <td>${commitCell(m)}</td>
+    </tr>`;
+  }
+}
+
+async function loadModels() {
+  const extra = getExtraModels();
+  const qs = extra.length ? `?extra=${encodeURIComponent(extra.join(","))}` : "";
+  try {
+    const res = await fetch(`/api/models${qs}`);
+    const data = await res.json();
+    renderModelsTable(data.models);
+    $("models-updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    $("models-empty").textContent = `Failed to load models: ${e}`;
+    $("models-empty").style.display = "block";
+    $("models-table").style.display = "none";
+  }
+}
+
+$("add-model-btn").addEventListener("click", () => {
+  const repoId = $("repo-input").value.trim();
+  if (!repoId) return;
+  addExtraModel(repoId);
+  $("repo-input").value = "";
+  $("models-updated").textContent = "Looking up " + repoId + "...";
+  loadModels();
+});
+$("repo-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("add-model-btn").click(); }
+});
+
+loadSystemStats();
+loadContainers();
+loadLogs();
+loadModels();
+scheduleLogRefresh();
+setInterval(loadSystemStats, 5000);
+setInterval(loadContainers, 5000);
+</script>
+</body>
+</html>
