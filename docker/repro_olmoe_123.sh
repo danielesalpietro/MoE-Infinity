@@ -137,7 +137,10 @@ phase_before() {
 
 phase_patch() {
   echo "== phase: patch (olmoe 4 -> 5) =="
-  docker exec "$CONTAINER" python - <<'PY'
+  # -i is required: without it docker exec does not forward stdin, python
+  # reads EOF, does nothing and exits 0 -- a silent no-op that leaves the
+  # constant unchanged while reporting success.
+  docker exec -i "$CONTAINER" python - <<'PY'
 import re, pathlib
 p = pathlib.Path("/workspace/MoE-Infinity/moe_infinity/common/constants.py")
 src = p.read_text()
@@ -150,13 +153,31 @@ PY
   # The mapping is read at model-registration time, so the process has to be
   # restarted -- an edit alone changes nothing for an already-loaded model.
   docker compose -f "$COMPOSE_FILE" restart "$SERVICE"
-  echo "olmoe expert type after restart: $(expert_type_in_container)"
+  t="$(expert_type_in_container)"
+  echo "olmoe expert type after restart: ${t}"
+  # Verify, do not assume: the previous version reported success while the
+  # constant was untouched.
+  [ "$t" = "5" ] || { echo "patch did NOT take effect -- still ${t}" >&2; return 1; }
+  echo "patch confirmed in the running container"
 }
 
 phase_after() {
   echo "== phase: after (expecting a completion) =="
-  echo "olmoe expert type in container: $(expert_type_in_container)"
-  wait_ready
+  local t
+  t="$(expert_type_in_container)"
+  echo "olmoe expert type in container: ${t}"
+  # Refuse to call this phase "after" if the patch never landed. The first run
+  # restarted the service with the constant still at 4 and reported the result
+  # as though the fix had been tested.
+  if [ "$t" != "5" ]; then
+    fail_msg="the patch phase did not take effect -- olmoe is still ${t}, not 5"
+    echo "$fail_msg" >&2
+    echo "run: docker/repro_olmoe_123.sh patch" >&2
+    return 2
+  fi
+  # Collect evidence even when the engine is dead: a failed after phase is a
+  # result worth recording, not a reason to abort before writing the log.
+  wait_ready || true
   probe > "$EVIDENCE_DIR/after.response.json" 2> "$EVIDENCE_DIR/after.curl.err" \
     && echo "request returned a response" \
     || { echo "request still failing -- the flip is not sufficient" >&2; }
