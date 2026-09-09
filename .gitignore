@@ -251,3 +251,6 @@ moe_infinity/_version.py
 # Local stack data (HF cache, expert offload spill, Open WebUI db) when
 # MOE_DATA_ROOT is left at its default. See docker-compose.webui.yml.
 /.data/
+
+# Evidence captured by docker/repro_olmoe_123.sh (server logs, responses).
+/.repro-123/
