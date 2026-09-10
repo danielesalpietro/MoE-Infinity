@@ -259,3 +259,11 @@ moe_infinity/_version.py
 # host (vast.ai tenancy, storage layout, LAN address) and the fork is public.
 # Remove this line to share it with the repo.
 /CLAUDE.md
+
+# Third copy of the Z8 logbooks, pulled with scp. They live on the Z8 and
+# nowhere else in version control; this guards against the NVMe backup being
+# cleared. Not committed: they describe this specific host and the fork is public.
+/.z8-logbook/
+
+# Scratch dir used when syncing Z8 notes into z8-notes/.
+/.z8-sync/
