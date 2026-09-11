@@ -54,7 +54,7 @@ Key benefits include:
 
 ## Supported Models
 
-MoE-Infinity supports HuggingFace MoE checkpoints registered in [`moe_infinity/common/constants.py`](./moe_infinity/common/constants.py):
+MoE-Infinity supports HuggingFace MoE checkpoints registered in [`moe_infinity/common/constants.py`](./moe_infinity/common/constants.py). See [docs/model-compatibility.md](./docs/model-compatibility.md) for quantization (GPTQ/AWQ/MXFP4) support, multi-GPU notes, and unsupported-format behavior.
 
 | Model | Example checkpoints |
 |---|---|
