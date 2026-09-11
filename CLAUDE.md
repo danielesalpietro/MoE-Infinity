@@ -81,6 +81,13 @@ highest-numbered logbook, then `logbook_issue123.md` if the OLMoE work is what
 you are picking up. `logbook_s000.md` is worth reading even when stale —
 most of it is *why* things are the way they are, and that does not expire.
 
+**And one document that is not ours:** `docs/model-compatibility.md`, in the
+upstream tree. It is the project's own record of what is validated, what is
+merely implemented, and what has no evidence at all — per family and per
+capability. It is checked into every branch we work on, it changes (last
+touched 2026-09-04 by #175), and it must be **re-read and verified against the
+current tree**, not remembered. See the convention below.
+
 **Log everything.** Not a nicety: this project has repeatedly been saved by a
 timestamp or a log line written down at the time. Incidents go in the logbook
 **including our own mistakes**, with the cause, because the mistakes are the
@@ -404,12 +411,21 @@ hand when changing GPU or image.
 
 **Upstream — `EfficientMoE/MoE-Infinity`**
 
+State as of 2026-09-11.
+
 | | | |
 |---|---|---|
-| [#119](https://github.com/EfficientMoE/MoE-Infinity/pull/119) | PR, ours | superseded by #205, **should be closed** |
-| [#123](https://github.com/EfficientMoE/MoE-Infinity/issues/123) | issue, ours | reproduced on hardware; no maintainer response in 52 days |
-| [#205](https://github.com/EfficientMoE/MoE-Infinity/pull/205) | PR, `drunkcoding` | OLMoE parsing; CI green, no review, `BLOCKED` |
-| [#206](https://github.com/EfficientMoE/MoE-Infinity/pull/206) | PR, `mfethe1` | Jamba 4→5 plus a layout-derived test. We commented with the runtime evidence |
+| [#207](https://github.com/EfficientMoE/MoE-Infinity/pull/207) | PR, **ours**, open | OLMoE expert type 4→5 plus the v5 bare-tensor return. `REVIEW_REQUIRED`, `MERGEABLE`. `mfethe1` ran an independent RED/GREEN control and reported no concerns. We added the numerical validation (44/48 vs plain transformers, the one divergence on an exact bf16 logit tie) and corrected our own caveat in-thread. **The PR body still carries the wrong attribution** — it blames the missing shim alone — and editing it is still owed |
+| [#195](https://github.com/EfficientMoE/MoE-Infinity/pull/195) | PR, `drunkcoding`, open | DeepSeek MLA shim *plus* the KV layer-dimension and decode-write repairs. The thread where the real work is. We reported that `num_layers` is never passed at `big_modeling.py:483` (fatal for every non-MLA model), the three-architecture before/after, the memory regression and the concurrency crash; `mfethe1` reproduced on CPU and found the INT8 allocation clobber, which our conflict resolution already fixes |
+| [#191](https://github.com/EfficientMoE/MoE-Infinity/issues/191) | issue, `drunkcoding`, open | DeepSeek decode garbage. #195 + the `num_layers` line fixes it on our hardware. No comments; nothing owed here — it closes when #195 lands |
+| [#123](https://github.com/EfficientMoE/MoE-Infinity/issues/123) | issue, ours, open | OLMoE crash. Fixed by #207; closes when that merges |
+| [#205](https://github.com/EfficientMoE/MoE-Infinity/pull/205) | PR, `drunkcoding`, open | OLMoE parsing. #207 depends on it — without it OLMoE does not load at all |
+| [#206](https://github.com/EfficientMoE/MoE-Infinity/pull/206) | PR, `mfethe1`, open | Jamba 4→5. Same two defects as #207. We published a corrigendum retracting the "Qwen3 correct" row |
+| [#119](https://github.com/EfficientMoE/MoE-Infinity/pull/119) | PR, ours | **closed** 2026-09-10, superseded by #205 |
+
+`mfethe1` is a peer contributor, not a maintainer — `author_association: NONE`,
+zero merged commits. The "Author" badge on #206 means author *of that PR*. Merge
+authority sits with `drunkcoding` (99 of ~130 commits) and `lausannel`.
 
 **Fork — roadmap, not blocking:** [#2](https://github.com/danielesalpietro/MoE-Infinity/issues/2) RunPod package, [#3](https://github.com/danielesalpietro/MoE-Infinity/issues/3) Blackwell profile.
 
@@ -428,6 +444,44 @@ hand when changing GPU or image.
   distinguishes what was executed from what was inferred by reading source.
   That distinction is the reason the runtime evidence carries weight; spend it
   and it is gone.
+- **Consult `docs/model-compatibility.md` before any support claim, and check
+  it against the tree.** The project keeps its own matrix of what is
+  `validated` (has a repository harness), `implemented/experimental` (code plus
+  tiny/unit evidence only) and `not recorded` / `not validated` (no direct
+  evidence), split by family *and* by capability — general sync/offload is
+  scored separately from continuous serving. Read it before saying a model is
+  supported, broken, or regressed, and before framing any finding as a defect:
+  a crash on a surface the project already marks experimental is a different
+  claim from a crash on a validated one. Re-read it each session rather than
+  trusting this summary — it is upstream's file, it moves, and a stale
+  recollection of it is worse than none.
+
+  Its closing line is the rule itself, and is worth obeying beyond that file:
+
+  > Use `Not recorded` rather than extrapolating hardware, pairing,
+  > route-ahead, sampling, rich batching, or paged-cache support from an
+  > adjacent capability.
+
+  **Why this is a standing rule and not advice.** On 2026-09-10 this was
+  violated four times in one session, each time by asserting from an adjacent
+  fact instead of a measurement, and each time the measurement later disagreed:
+  Qwen3 was called "correct" on the strength of a tiny fixture where the only
+  observation was that output *varied*, and that wrong row was published to a
+  third party working on Jamba; the OLMoE serving collapse was reported without
+  noting that the matrix already lists OLMoE continuous serving as **not
+  validated**, which made a confirmation read as a regression; a concurrency
+  crash was reported as a flat defect without noting that DeepSeek-V2
+  continuous serving is `implemented/experimental`; and two successive causes
+  were proposed in public for a slowdown that the same document explains as
+  intentional — "DeepSeek MLA uses the correct PyTorch fallback, not
+  FlashInfer acceleration". The file was in the checkout since 2026-09-09 and
+  was not opened until the user pointed at it.
+
+  A corollary from the same day: **an unverified mechanism that matters is
+  still worth publishing, labelled unverified.** The dead `_write_decode_kv`
+  was found on 2026-09-10 and cut from the #195 comment for being unmeasured;
+  another contributor found and reported it independently hours later. Silence
+  is not the conservative option — mislabelling is.
 - Logbook days are counted in **UTC**, the Z8's clock, so entries line up with
   the build logs, journals and kaalia log they cite.
 - Commits end with the `Co-Authored-By` trailer; PR bodies end with the Claude
