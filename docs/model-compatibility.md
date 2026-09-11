@@ -36,6 +36,49 @@ page explains what it means in practice.
 model kept for legacy/testing purposes — it is not part of the supported MoE
 model surface.
 
+## Full MoE architecture coverage
+
+MoE-Infinity's supported-model set has changed over time: architectures get
+added when a contributor writes an offloading wrapper for them, and have
+occasionally been **dropped** — either because they depended on vendored
+(non-upstream) modeling code that became a maintenance burden, or because a
+specific integration bug made them not worth maintaining. This table tracks
+every MoE architecture that has been supported, is supported, or is a
+plausible near-term candidate (i.e. it already exists as a HuggingFace
+`transformers` model class), regardless of its current state.
+
+This repository doesn't tag releases with semantic version numbers (the
+package version has stayed `0.0.1` in `moe_infinity/__init__.py` across its
+history), so "last supported in" below points at the last commit/PR where
+the architecture was present, rather than a version number.
+
+| Architecture | HF class | Status | Notes |
+|---|---|---|---|
+| DeepSeek-V2 | `DeepseekV2ForCausalLM` | ✅ Supported | |
+| DeepSeek-V3 | `DeepseekV3ForCausalLM` | ✅ Supported | |
+| DeepSeek-V4-Flash | `DeepseekV4ForCausalLM` (HF) / native checkpoint | ✅ Supported | Registered only when `transformers` ships `DeepseekV4ForCausalLM`; full offload path targets the native (non-HF) checkpoint format. |
+| Mixtral | `MixtralForCausalLM` | ✅ Supported | Only family with a fused GPTQ expert-forward kernel. |
+| Qwen3-MoE | `Qwen3MoeForCausalLM` | ✅ Supported | |
+| GPT-OSS | `GptOssForCausalLM` | ✅ Supported | Native MXFP4 expert path. |
+| DBRX | `DbrxForCausalLM` | ✅ Supported | |
+| Jamba | `JambaForCausalLM` | ✅ Supported | Hybrid Mamba/attention + MoE. |
+| OLMoE | `OlmoeForCausalLM` | ✅ Supported | |
+| Meta NLLB-MoE | `NllbMoeForConditionalGeneration` | ✅ Supported | Encoder-decoder. |
+| Snowflake Arctic | `ArcticForCausalLM` (vendored, not in upstream `transformers`) | ⛔ EoSupport | Last supported at commit `9e42c9d` (PR #75). Removed at commit `f178db3` (PR #97, subsuming PR #90): "Arctic and Grok models are removed entirely. They are not available in upstream HuggingFace transformers." Users needing Arctic must pin to a pre-`f178db3` release. |
+| xAI Grok-1 | `Grok1ModelForCausalLM` (vendored, not in upstream `transformers`) | ⛔ EoSupport | Same removal as Arctic above — same commit, same reason (not in upstream `transformers`; ~1,161 lines of vendored modeling code dropped). |
+| Google Switch Transformers | `SwitchTransformersForConditionalGeneration` (upstream, but dropped anyway) | ⛔ EoSupport | Last supported at commit `9e42c9d` (PR #75). Removed at commit `f178db3` (PR #97): a C++ `ExpertDispatcher::OutputFunc` out-of-bounds indexing bug, the native engine's incompatibility with its encoder-decoder architecture, and the model being considered outdated. Unlike Arctic/Grok, this one *is* in upstream `transformers` — it was dropped for integration/maintenance reasons, not availability. |
+| Qwen2-MoE | `Qwen2MoeForCausalLM` | 🔜 Coming soon | Available upstream in `transformers`; no wrapper yet in `moe_infinity/models/`. |
+| Llama 4 (Scout / Maverick) | `Llama4ForCausalLM` | 🔜 Coming soon | Available upstream in `transformers`; no wrapper yet. |
+| IBM Granite MoE | `GraniteMoeForCausalLM` / `GraniteMoeSharedForCausalLM` | 🔜 Coming soon | Available upstream in `transformers`; no wrapper yet. |
+| JetMoE | `JetMoeForCausalLM` | 🔜 Coming soon | Available upstream in `transformers`; no wrapper yet. |
+| Phi-3.5-MoE | `PhimoeForCausalLM` | 🔜 Coming soon | Available upstream in `transformers`; no wrapper yet. |
+
+"Coming soon" here means the architecture is a realistic candidate because it
+already has an upstream `transformers` class to wrap — not an official
+roadmap commitment. As with any new model family, adding one goes through an
+issue first per [CONTRIBUTING.md](../CONTRIBUTING.md); see
+[Adding support for a new model](#adding-support-for-a-new-model) below.
+
 ## Quantization support
 
 Quantization is detected from a checkpoint's `config.json`
