@@ -91,9 +91,16 @@ services:
     image: moe-infinity-serve:${MOE_IMAGE_TAG:-sm${CUTLASS_NVCC_ARCHS:-86}}
     container_name: moe-infinity-server
     restart: unless-stopped
-    runtime: nvidia
+    # CDI device reference rather than runtime: nvidia +
+    # NVIDIA_VISIBLE_DEVICES. The legacy pair resolves the id against whichever
+    # CDI spec the runtime picks first, and on a host where another tenant's
+    # tooling writes short-lived specs of its own (see the D.<hash>.yaml files
+    # in /etc/cdi) that is not necessarily the nvidia.com/gpu one. Addressing
+    # the device explicitly pins it to the spec that actually enumerates every
+    # GPU on the box, which is what makes a GPU-<uuid> selector reliable.
+    devices:
+      - "nvidia.com/gpu=${MOE_GPU_DEVICE_IDS:-0}"
     environment:
-      NVIDIA_VISIBLE_DEVICES: ${MOE_GPU_DEVICE_IDS:-0}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       MOE_MODEL: ${MOE_MODEL:-vprovorg/tiny-random-Mixtral-8x7B-v0.1}
       MOE_OFFLOAD_DIR: /offload
@@ -152,9 +159,9 @@ services:
     image: moe-infinity-model-status:latest
     container_name: moe-infinity-model-status
     restart: unless-stopped
-    runtime: nvidia
+    devices:
+      - "nvidia.com/gpu=${MOE_GPU_DEVICE_IDS:-0}"
     environment:
-      NVIDIA_VISIBLE_DEVICES: ${MOE_GPU_DEVICE_IDS:-0}
       NVIDIA_DRIVER_CAPABILITIES: utility
       HF_TOKEN: ${HF_TOKEN:-}
       HOST_RAM_TOTAL_GB: ${HOST_RAM_TOTAL_GB:-}
