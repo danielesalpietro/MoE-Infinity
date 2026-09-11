@@ -48,6 +48,12 @@ RUN mkdir -p ${CCACHE_DIR}
 ARG CUTLASS_REPO=https://github.com/NVIDIA/cutlass.git
 ARG CUTLASS_VERSION=v3.9.2
 ARG CUTLASS_NVCC_ARCHS=86
+# Cap the compile parallelism: -j$(nproc) on a 32-thread host spawns ~150
+# compiler processes, saturates the box and makes the vast.ai GPU probe
+# fail. MAX_JOBS is what torch.utils.cpp_extension hands to ninja for the
+# MoE-Infinity extensions; the CUTLASS build below takes it explicitly.
+ARG BUILD_JOBS=16
+ENV MAX_JOBS=${BUILD_JOBS}
 ENV CUTLASS_DIR=/root/cutlass
 
 RUN git clone --branch ${CUTLASS_VERSION} --depth 1 ${CUTLASS_REPO} ${CUTLASS_DIR}
@@ -58,7 +64,7 @@ RUN --mount=type=cache,target=/ccache \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-    && cmake --build ${CUTLASS_DIR}/build --target cutlass_library -j$(nproc)
+    && cmake --build ${CUTLASS_DIR}/build --target cutlass_library -j${BUILD_JOBS}
 
 RUN git clone --branch v3.2.2 --depth 1 https://github.com/NVIDIA/NVTX.git /tmp/nvtx \
     && cp -a /tmp/nvtx/c/include/nvtx3/. /usr/local/cuda/include/nvtx3/ \

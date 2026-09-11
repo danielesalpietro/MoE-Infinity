@@ -88,6 +88,7 @@ services:
         INSTALL_FLASH_ATTN: ${INSTALL_FLASH_ATTN:-false}
         CUTLASS_VERSION: ${CUTLASS_VERSION:-v3.9.2}
         CUTLASS_NVCC_ARCHS: ${CUTLASS_NVCC_ARCHS:-86}
+        BUILD_JOBS: ${BUILD_JOBS:-16}
     image: moe-infinity-serve:${MOE_IMAGE_TAG:-sm${CUTLASS_NVCC_ARCHS:-86}}
     container_name: moe-infinity-server
     restart: unless-stopped
