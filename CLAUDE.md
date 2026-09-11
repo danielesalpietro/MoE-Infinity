@@ -73,7 +73,7 @@ Locations:
 | All of the above | Z8: `~/moe-infinity/` and `~/moe-infinity/logbook/` |
 | Next-day helper (counter derived, never typed) | Z8: `~/moe-infinity/logbook/new-day.sh` |
 | Retired scripts, with a note saying why not to run them | Z8: `~/moe-infinity/archive/` |
-| Third copy of the logbooks and the todo | this repo: `.z8-logbook/`, git-ignored |
+| Third copy of the logbooks, the todo, `assets.md` and `declare-env.sh` | this repo: `.z8-logbook/`, excluded via `.git/info/exclude` |
 | Cross-session facts about the user and the project | `~/.claude/projects/<this-project>/memory/` (see `MEMORY.md`) |
 
 **Reading order for a new session:** this file, then `todolist.md`, then the
