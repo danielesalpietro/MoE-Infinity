@@ -2,8 +2,8 @@
 
 What this machine actually is, measured rather than assumed, and what each
 part means for MoE-Infinity. Figures taken 2026-09-10, except the
-moe-store-split and RunPod sections, added 2026-09-13 and dated within
-themselves.
+moe-store-split and RunPod sections (added 2026-09-13) and the GPT-OSS/5060
+Ti MXFP4-serving section (added 2026-09-14), each dated within itself.
 
 ---
 
@@ -145,6 +145,69 @@ confirmed from a different architecture. What needs `CUTLASS_NVCC_ARCHS=120` is
 MoE-Infinity's own fused kernels, nothing else. Its 16 GB also bounds what
 fits: OLMoE (13 GB) yes; DeepSeek-V2-Lite (30 GB) and Qwen3-30B (57 GB) no.
 
+### MoE-Infinity's own MXFP4 serving on the 5060 Ti (2026-09-14)
+
+The paragraph above is about plain `transformers`; MoE-Infinity's own served
+inference is a separate question, and the two kernels involved are not one
+thing. Confirmed by running `openai/gpt-oss-20b` (native MXFP4, ~12.9 GB —
+not ~9 GB as an earlier estimate from an incomplete shard list said; verify
+against the actual file tree, not a partial sum) end to end:
+
+- **The MXFP4 GEMM kernel** (`moe_infinity.kernel.mxfp4_gemm.fused_mxfp4_gemm`)
+  already runs on sm_120 in the everyday `sm86-main7007` image
+  (`CUTLASS_NVCC_ARCHS=86`) — confirmed with a standalone kernel-launch
+  smoke test before trusting it further.
+- **The expert-dispatch kernel** (`moe_infinity/distributed/expert_executor.py`,
+  `wait_expert()`) does not: `torch.AcceleratorError: no kernel image is
+  available for execution on the device`, reached only once real generation
+  starts, not at import or model-load time. Different compiled extension,
+  different arch coverage, same "no kernel image" symptom as the
+  RunPod/Ada finding above — but this one is a real gap, not a binary-
+  compatibility question, because `setup.py`'s default flags never include
+  `sm_120` unless `MOE_ENABLE_SM120=1` is set at build time, and this image
+  never had it set.
+- **The project already ships a dedicated fix for this**:
+  `docker/Dockerfile.blackwell` — a separate profile, not a flag to bolt
+  onto the everyday one. Different base image
+  (`nvcr.io/nvidia/pytorch:25.11-py3`, not `pytorch/pytorch:...`), different
+  CUTLASS version (v4.4.0, not v3.9.2 — Blackwell-specific templates the
+  older CUTLASS lacks), `MOE_ENABLE_SM120=1 MOE_ENABLE_SM90=0`,
+  `NVTX_DISABLE=1` (sidesteps the missing-NVTX-header gap noted in the
+  RunPod section entirely, rather than installing the headers). `.env` had
+  already flagged it — "`CUTLASS_VERSION=v4.4.0, CUTLASS_NVCC_ARCHS=120`...
+  Change both together or not at all" — read closely only once this gap was
+  hit, not before. `compute_80` stays in `setup.py`'s flags regardless of
+  `MOE_ENABLE_SM90`/`MOE_ENABLE_SM120`, so an image built this way is not
+  Blackwell-only: it should still serve the 3090 too, via the same binary
+  compatibility this document already relies on elsewhere. Built once here,
+  8 minutes (`docker build -f docker/Dockerfile.blackwell .`), tagged
+  `moe-infinity-blackwell:sm120-main7007`.
+- **`device_memory_ratio` needs its own number per card, not a value
+  carried over from the 3090.** `0.5` (this project's usual OLMoE-era
+  default) OOMs on the 5060 Ti's 16 GB; `0.3` loads (62 s, reusing an
+  already-materialised `/offload`) and generates (4.5 s) cleanly:
+  `"The capital of France is Paris."` Confirmed not just by hand but by the
+  repository's own unmodified smoke harness
+  (`tests/python/integration/test_model_smoke.py::test_generate_smoke[gpt_oss]`,
+  `MOE_GPT_OSS_SMOKE=1`), which hardcodes `0.75` for this model and fails
+  with the identical real `cudaMalloc` OOM on this card, run to completion,
+  not assumed (1:15:28 wall time — almost entirely the snapshot download at
+  100 Mb/s, the test itself takes minutes). `0.75` was tuned on whatever
+  card originally earned GPT-OSS its "20B validated" line in
+  `docs/model-compatibility.md`; evidently not a 16 GB one, and the harness
+  itself does not parametrise the ratio per card.
+- A repeat of a lesson from the RunPod section, on a different axis this
+  time: a checkpoint download excluding files you don't need
+  (`ignore_patterns=[...]`, done once here to skip a duplicate
+  `original/model.safetensors`) makes `huggingface_hub` consider that local
+  snapshot **incomplete** for any later call that does not pass the same
+  `ignore_patterns` — including `MoE()`'s own internal `snapshot_download`,
+  which takes none. `HF_HUB_OFFLINE=1` then fails outright instead of
+  fetching the gap; without it, `snapshot_download` quietly re-fetches
+  whatever was excluded. Either pass identical `ignore_patterns`
+  everywhere a given cache is read, or do not exclude anything from the
+  original download at all.
+
 ## PCIe — the ceiling
 
 **The platform is PCIe 3.0.** Cascade Lake has no gen 4.
@@ -203,6 +266,16 @@ which matches. `00:68:eb:9b:90:0d`, gateway 192.168.1.1, host 192.168.1.110.
 
 This is the biggest avoidable bottleneck on the machine: 31.4 GB takes ~75
 minutes at this rate, and the 10 GB PyTorch base image took 27.
+
+**Confirmed 2026-09-14: this 100 Mb/s cap is the NIC's own negotiation, not
+the uplink.** A speed test on the same network, wired directly into the
+router and bypassing the WiFi access point (a different device from the
+Z8, which is itself already wired): 76.13 Mbps down / 8.20 Mbps up, ping
+10-77 ms. That is most of a full 100 Mbit link's real-world throughput —
+the ISP connection has headroom the Z8 cannot currently reach because its
+own port negotiates at 100 Mb/s, full stop, independent of anything
+upstream. It settles which half of the network is actually worth fixing:
+not the ISP link, the Z8's own NIC/switch port.
 
 **Planned:** 4 x 1 Gbit, replacing the single 100 Mbit link. Worth being
 precise about what that buys, because it is not a straight 40x:
